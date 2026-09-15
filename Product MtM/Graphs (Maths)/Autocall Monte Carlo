@@ -1,0 +1,70 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import multivariate_normal
+
+# Monte Carlo check for the P(autocall at t=3) closed form in "Autocall Density":
+# simulate paths, classify each one with if/elif/else, compare the resulting
+# probability to Phi2(k1,k2) - Phi3(k1,k2,k3).
+
+# Observation times for the autocall (t=1, t=2, t=3)
+t = np.array([1.0, 2.0, 3.0])
+
+# Correlation of X_i, X_j for a driftless Brownian path observed at t_i, t_j
+R = np.sqrt(np.minimum.outer(t, t) / np.maximum.outer(t, t))
+rho12 = R[0, 1]
+
+biv = multivariate_normal(mean=[0, 0], cov=[[1, rho12], [rho12, 1]])
+triv = multivariate_normal(mean=[0, 0, 0], cov=R)
+
+rng = np.random.default_rng(42)
+N_SIMS = 100_000
+N_PLOT = 10_000  # only this many points are drawn, to keep the scatter readable/fast
+
+# Barrier point being verified (0.0 = at-the-money at every observation date)
+k1_mc, k2_mc, k3_mc = 0.0, 0.0, 0.0
+
+paths = rng.multivariate_normal(mean=[0, 0, 0], cov=R, size=N_SIMS)
+
+outcomes = np.empty(N_SIMS, dtype=object)
+for i in range(N_SIMS):
+    x1, x2, x3 = paths[i]
+    if x1 > k1_mc:
+        outcomes[i] = "Called at t=1"
+    elif x2 > k2_mc:
+        outcomes[i] = "Called at t=2"
+    elif x3 > k3_mc:
+        outcomes[i] = "Called at t=3"
+    else:
+        outcomes[i] = "Never called"
+
+mc_prob_t3 = np.mean(outcomes == "Called at t=3")
+analytic_prob_t3 = biv.cdf([k1_mc, k2_mc]) - triv.cdf([k1_mc, k2_mc, k3_mc])
+
+colors = {
+    "Called at t=1": "tab:red",
+    "Called at t=2": "tab:cyan",
+    "Called at t=3": "chartreuse",
+    "Never called": "black",
+}
+
+plot_idx = rng.choice(N_SIMS, size=N_PLOT, replace=False)
+plot_paths = paths[plot_idx]
+plot_outcomes = outcomes[plot_idx]
+
+fig_mc = plt.figure(figsize=(10, 10))
+ax_mc = fig_mc.add_subplot(projection="3d")
+for label, color in colors.items():
+    mask = plot_outcomes == label
+    ax_mc.scatter(plot_paths[mask, 0], plot_paths[mask, 1], plot_paths[mask, 2],
+                  c=color, label=label, s=8, alpha=0.6)
+
+ax_mc.set_xlabel("X1 (t=1)")
+ax_mc.set_ylabel("X2 (t=2)")
+ax_mc.set_zlabel("X3 (t=3)")
+ax_mc.set_title(
+    f"Monte Carlo Autocall Outcomes (N={N_SIMS})\n"
+    f"P(call at t=3): MC={mc_prob_t3:.3f}  Analytic={analytic_prob_t3:.3f}"
+)
+ax_mc.legend(loc="upper left")
+
+plt.show()

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p /private/tmp/claude-501/-Users-annabeskhmelnitsky-Structured-Products/489dfcd0-d619-4273-8448-1c642462990e/scratchpad)",
+      "Bash(pkill -f \"streamlit run app.py\")",
+      "Bash(rm -f \"/Users/annabeskhmelnitsky/Structured Products/_chart_test2.py\" /tmp/chart_test_out.log /tmp/chart_test2.log)"
+    ],
+    "additionalDirectories": [
+      "/private/tmp"
+    ]
+  }
+}

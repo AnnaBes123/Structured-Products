@@ -1,0 +1,41 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import multivariate_normal
+
+# P(autocall at t=3) = integral over x1<=k1, x2<=k2, x3>k3 of f(x1,x2,x3;R) dx3 dx2 dx1
+# computed as Phi2(k1,k2;rho12) - Phi3(k1,k2,k3;R), instead of a raw triple integral
+
+# Observation times for the autocall (t=1, t=2, t=3)
+t = np.array([1.0, 2.0, 3.0])
+
+# Correlation of X_i, X_j for a driftless Brownian path observed at t_i, t_j
+R = np.sqrt(np.minimum.outer(t, t) / np.maximum.outer(t, t))
+rho12 = R[0, 1]
+
+# Barrier k3 at t=3 held fixed; surface is P(autocall at t=3) over (k1, k2)
+k3 = 0.0
+
+k1 = np.linspace(-3, 3, 100)
+k2 = np.linspace(-3, 3, 100)
+K1, K2 = np.meshgrid(k1, k2)
+
+biv = multivariate_normal(mean=[0, 0], cov=[[1, rho12], [rho12, 1]])
+triv = multivariate_normal(mean=[0, 0, 0], cov=R)
+
+points2 = np.stack([K1, K2], axis=-1)
+points3 = np.stack([K1, K2, np.full_like(K1, k3)], axis=-1)
+
+# P(X1<=k1, X2<=k2, X3>k3) = Phi2(k1,k2) - Phi3(k1,k2,k3)
+Z = np.clip(biv.cdf(points2) - triv.cdf(points3), 0, None)
+
+fig = plt.figure(figsize=(10,10))
+ax = fig.add_subplot(projection="3d")
+surf = ax.plot_surface(K1, K2, Z, cmap="magma", edgecolor="none")
+
+ax.set_xlabel("k1 (t=1 barrier)")
+ax.set_ylabel("k2 (t=2 barrier)")
+ax.set_zlabel("P(autocall at t=3)")
+ax.set_title(f"P(Autocall at t=3) vs Barriers k1, k2 (k3 fixed = {k3:.2f})")
+fig.colorbar(surf, shrink=0.5, aspect=10)
+
+plt.show()

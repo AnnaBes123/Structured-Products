@@ -1,0 +1,158 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from scipy.stats import norm
+
+# ---------------------------------------------------------------------------
+# 1D evolving probability: P1(t) = P(S_t1 <= K1), t1 = 2025-06-30 (end of Q2),
+# recomputed every trading day t from Jan 2025 up to t1, using that day's
+# REAL S&P 500 spot and REAL implied vol (VIX/VIX3M/VIX6M interpolated to
+# T1 = t1 - t). Shows the actual lognormal density of S_t1 reshaping day by
+# day as spot moves and time-to-observation shrinks, with the barrier region
+# S_t1 <= K1 shaded - the shaded area IS P1(t).
+#
+# Under risk-neutral GBM, ln(S_t1) | S_t ~ Normal(ln(S_t) + v*T1, sigma_t^2*T1),
+# v = mu - 0.5*sigma_t^2 (mu = risk-free rate here). So
+#   P1(t) = P(ln S_t1 <= ln K1) = Phi(d),  d = (ln K1 - ln S_t - v*T1) / (sigma_t*sqrt(T1))
+# which is the standard Black-Scholes N(-d2).
+# ---------------------------------------------------------------------------
+
+ENTRY_DATE = "2025-01-02"
+OBS_DATE = "2025-06-30"  # t1: end of Q2 - first observation, matching the
+                          # repo's usual 1-quarter lockout convention
+K1_PCT = 1.00             # barrier as a fraction of S0 (entry-date level)
+MU = 0.04                 # risk-neutral drift (risk-free rate)
+
+TICKER = "^GSPC"
+FRED_SERIES = "SP500"
+VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
+VIX_FRED_SERIES = "VIXCLS"
+
+
+def fetch_daily_closes(ticker, start, end, fred_series=None):
+    series = None
+    try:
+        import yfinance as yf
+        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+        if data is not None and not data.empty:
+            close = data["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            series = close.dropna()
+    except Exception as exc:
+        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
+
+    if (series is None or series.empty) and fred_series:
+        try:
+            import pandas_datareader.data as web
+            data = web.DataReader(fred_series, "fred", start, end)
+            series = data[fred_series].dropna()
+        except Exception as exc:
+            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
+
+    if series is None or series.empty:
+        raise RuntimeError(f"No data returned for {ticker}")
+    return series
+
+
+def interpolate_implied_vol(vols_by_tenor, T_years):
+    points = sorted(vols_by_tenor.items())
+    if T_years <= points[0][0]:
+        return points[0][1]
+    if T_years >= points[-1][0]:
+        return points[-1][1]
+    for (t0, v0), (t1, v1) in zip(points, points[1:]):
+        if t0 <= T_years <= t1:
+            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
+            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
+            return np.sqrt(var_T / T_years)
+    return points[-1][1]
+
+
+def d_barrier(S_t, K, T, sigma_t, mu):
+    """Standardized barrier distance: P(S_T <= K) = Phi(d_barrier)."""
+    v = mu - 0.5 * sigma_t ** 2
+    return (np.log(K / S_t) - v * T) / (sigma_t * np.sqrt(T))
+
+
+def lognormal_density(s_grid, S_t, T, sigma_t, mu):
+    v = mu - 0.5 * sigma_t ** 2
+    m, sd = np.log(S_t) + v * T, sigma_t * np.sqrt(T)
+    return norm.pdf((np.log(s_grid) - m) / sd) / (s_grid * sd)
+
+
+print(f"Fetching S&P 500 path from {ENTRY_DATE} to {OBS_DATE}...")
+close = fetch_daily_closes(TICKER, ENTRY_DATE, OBS_DATE, fred_series=FRED_SERIES)
+close = close[close.index < pd.Timestamp(OBS_DATE)]  # stop the day BEFORE t1 (T1 must stay > 0)
+S0 = float(close.iloc[0])
+K1 = K1_PCT * S0
+
+print("Fetching VIX / VIX3M / VIX6M term structure for the same window...")
+vol_term_structure = {}
+for ticker, tenor_days in VOL_TERM_STRUCTURE_TICKERS.items():
+    fred_series = VIX_FRED_SERIES if ticker == "^VIX" else None
+    series = fetch_daily_closes(ticker, ENTRY_DATE, OBS_DATE, fred_series=fred_series)
+    vol_term_structure[tenor_days / 365.25] = (series / 100.0).reindex(close.index).ffill().bfill()
+
+t1 = pd.Timestamp(OBS_DATE)
+dates = close.index
+T1_years = np.array([(t1 - d).days / 365.25 for d in dates])
+sigma_t_series = np.array([
+    interpolate_implied_vol({tenor: s.loc[d] for tenor, s in vol_term_structure.items()}, T1_years[i])
+    for i, d in enumerate(dates)
+])
+S_t_series = close.values
+
+d_series = d_barrier(S_t_series, K1, T1_years, sigma_t_series, MU)
+P1_series = norm.cdf(d_series)
+
+s_grid = np.linspace(0.3 * S0, 1.8 * S0, 600)
+
+fig, ax = plt.subplots(figsize=(11, 7))
+line, = ax.plot([], [], color="firebrick", linewidth=2)
+fill = [None]
+spot_marker = ax.axvline(S0, color="black", linewidth=1, linestyle="dashed", alpha=0.6)
+barrier_line = ax.axvline(K1, color="dodgerblue", linewidth=1.2, linestyle="dotted")
+ax.text(K1, 0, f" K1 = {K1_PCT:.0%} of S0", color="dodgerblue", rotation=90, va="bottom", ha="right", fontsize=9)
+title = ax.set_title("")
+ax.set_xlabel("S (index level at t1 = 2025-06-30)")
+ax.set_ylabel("Probability density")
+ax.set_xlim(s_grid[0], s_grid[-1])
+ax.grid(True, color="lightgrey", linewidth=0.4)
+
+ymax_global = max(
+    lognormal_density(s_grid, S_t_series[i], T1_years[i], sigma_t_series[i], MU).max()
+    for i in range(len(dates))
+)
+ax.set_ylim(0, ymax_global * 1.1)
+
+
+def update(frame):
+    S_t, T1, sigma_t, P1, date = (S_t_series[frame], T1_years[frame], sigma_t_series[frame],
+                                   P1_series[frame], dates[frame])
+    density = lognormal_density(s_grid, S_t, T1, sigma_t, MU)
+    line.set_data(s_grid, density)
+
+    if fill[0] is not None:
+        fill[0].remove()
+    mask = s_grid <= K1
+    fill[0] = ax.fill_between(s_grid[mask], density[mask], color="firebrick", alpha=0.35)
+
+    spot_marker.set_xdata([S_t, S_t])
+
+    title.set_text(
+        f"{date.date()}  |  S_t = {S_t:,.0f}   sigma_t = {sigma_t:.1%}   T1 = {T1*365:.0f} days\n"
+        f"P(S_t1 <= K1) = {P1:.2%}   (shaded area)"
+    )
+    return line, fill[0], spot_marker, title
+
+
+anim = animation.FuncAnimation(fig, update, frames=len(dates), interval=80, blit=False)
+
+OUTPUT_GIF = __file__ + ".gif"
+print(f"Rendering {len(dates)} frames to {OUTPUT_GIF} ...")
+anim.save(OUTPUT_GIF, writer=animation.PillowWriter(fps=12))
+print("Done.")
+
+plt.show()
