@@ -1,0 +1,11 @@
+numpy==2.5.2
+pandas==3.0.5
+scipy==1.18.0
+matplotlib
+pandas_datareader
+plotly==6.9.0
+streamlit==1.61.1
+yfinance==1.6.0
+QuantLib==1.43
+arch==8.0.0
+statsmodels==0.15.0

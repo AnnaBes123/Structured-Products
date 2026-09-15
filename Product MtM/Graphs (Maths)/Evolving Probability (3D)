@@ -1,0 +1,296 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - registers the 3d projection
+from scipy.stats import norm, multivariate_normal
+from scipy.integrate import quad
+
+plt.rcParams["font.family"] = "Arial"
+
+# ---------------------------------------------------------------------------
+# A single smooth, continuously evolving SURFACE - "like water" - rather than
+# points or lines (both tried and rejected: a 3D scatter loses depth cues,
+# parallel coordinates got too dense to read). This is the true joint density
+# surface of (S_t1, S_t2):
+#   height  = f(S_t1, S_t2)          - the actual bivariate lognormal density
+#             (same object as the "Evolving Probability (2D)" contour, now
+#             rendered as a real 3D surface instead of a flat contour)
+#   color   = P(S_t3 <= K3 | S_t2)   - probability the THIRD leg also clears
+#             its barrier, given where the surface currently sits
+#
+# The color channel is the key idea: it's the closed-form CONDITIONAL
+# probability, not a Monte Carlo estimate or an approximation, and - by the
+# Markov property of Brownian motion - it depends ONLY on S_t2, not on S_t1
+# at all (today's leg's future increment doesn't care how it got to that
+# point). That's not a simplification for convenience; it's a true property
+# of the model, and it's visible directly in the picture: color forms
+# horizontal bands (constant along the S_t1 axis), because the maths says it
+# must.
+#
+# K1=K2=K3=100% of S0, matching every other file in this folder. K1 and K2
+# appear as reference lines on the surface's own domain (they're properties
+# of the two axes shown); K3 is what the color channel is actually about.
+#
+# Both the height (bivariate density) and the color (conditional Phi) are
+# exact closed forms - no simulation anywhere in the rendered animation.
+# What ties this back to Monte Carlo / the triple integral:
+#   1. sequential_triple_integral() is the literal requested triple integral
+#      (innermost step closed-form, the other two genuine numerical
+#      quadrature), validated once against the closed-form Phi3.
+#   2. LAW OF TOTAL PROBABILITY, validated once below: integrating
+#      height(S1,S2) * color(S1,S2) over the whole grid must equal the same
+#      P3 = Phi3(...) - literally the outer two integrals of the sequential
+#      triple integral, done via the grid instead of scipy.integrate.quad,
+#      as an independent numerical check that the surface being drawn is
+#      mathematically consistent with the number in the title.
+# ---------------------------------------------------------------------------
+
+ENTRY_DATE = "2025-01-02"
+OBS_DATE_1 = "2025-06-30"  # t1: end of Q2
+OBS_DATE_2 = "2025-09-30"  # t2: end of Q3
+OBS_DATE_3 = "2025-12-31"  # t3: end of Q4
+MU = 0.04
+
+REF_PCT = 1.00   # K1 = K2 = K3 = 100% of S0, fixed throughout
+GRID_N = 70      # (S_t1, S_t2) grid resolution
+
+TICKER = "^GSPC"
+FRED_SERIES = "SP500"
+VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
+VIX_FRED_SERIES = "VIXCLS"
+
+
+def fetch_daily_closes(ticker, start, end, fred_series=None):
+    series = None
+    try:
+        import yfinance as yf
+        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+        if data is not None and not data.empty:
+            close = data["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            series = close.dropna()
+    except Exception as exc:
+        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
+
+    if (series is None or series.empty) and fred_series:
+        try:
+            import pandas_datareader.data as web
+            data = web.DataReader(fred_series, "fred", start, end)
+            series = data[fred_series].dropna()
+        except Exception as exc:
+            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
+
+    if series is None or series.empty:
+        raise RuntimeError(f"No data returned for {ticker}")
+    return series
+
+
+def interpolate_implied_vol(vols_by_tenor, T_years):
+    points = sorted(vols_by_tenor.items())
+    if T_years <= points[0][0]:
+        return points[0][1]
+    if T_years >= points[-1][0]:
+        return points[-1][1]
+    for (t0, v0), (t1, v1) in zip(points, points[1:]):
+        if t0 <= T_years <= t1:
+            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
+            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
+            return np.sqrt(var_T / T_years)
+    return points[-1][1]
+
+
+def d_barrier(S_t, K, T, sigma_t, mu):
+    v = mu - 0.5 * sigma_t ** 2
+    return (np.log(K / S_t) - v * T) / (sigma_t * np.sqrt(T))
+
+
+def sequential_triple_integral(S_t, K1, K2, K3, T1, T2, T3, sigma_t, mu):
+    """Literal triple integral - see the header comment. Innermost step
+    (over y3) is closed-form; the other two are genuine numerical
+    quadrature nested via scipy.integrate.quad."""
+    v = mu - 0.5 * sigma_t ** 2
+    lnS = np.log(S_t)
+    m1, s1 = lnS + v * T1, sigma_t * np.sqrt(T1)
+    dt2, dt3 = T2 - T1, T3 - T2
+
+    def inner_cdf_y3_given_y2(y2):
+        m3, s3 = y2 + v * dt3, sigma_t * np.sqrt(dt3)
+        return norm.cdf((np.log(K3) - m3) / s3)
+
+    def middle_integral_given_y1(y1):
+        m2, s2 = y1 + v * dt2, sigma_t * np.sqrt(dt2)
+        integrand = lambda y2: inner_cdf_y3_given_y2(y2) * norm.pdf((y2 - m2) / s2) / s2
+        value, _ = quad(integrand, -np.inf, np.log(K2))
+        return value
+
+    outer_integrand = lambda y1: middle_integral_given_y1(y1) * norm.pdf((y1 - m1) / s1) / s1
+    result, _ = quad(outer_integrand, -np.inf, np.log(K1))
+    return result
+
+
+def p3(S_t, K1, K2, K3, T1, T2, T3, sigma_t):
+    d1 = d_barrier(S_t, K1, T1, sigma_t, MU)
+    d2 = d_barrier(S_t, K2, T2, sigma_t, MU)
+    d3 = d_barrier(S_t, K3, T3, sigma_t, MU)
+    R = np.sqrt(np.minimum.outer([T1, T2, T3], [T1, T2, T3]) / np.maximum.outer([T1, T2, T3], [T1, T2, T3]))
+    return multivariate_normal(mean=[0, 0, 0], cov=R).cdf([d1, d2, d3])
+
+
+def bivariate_lognormal_density(S1_grid, S2_grid, S_t, T1, T2, sigma_t):
+    """f_S(s1,s2) = f_Y(ln s1, ln s2) / (s1*s2) - Jacobian of the log
+    transform. Same construction as "Evolving Probability (2D)"."""
+    v = MU - 0.5 * sigma_t ** 2
+    mean = [np.log(S_t) + v * T1, np.log(S_t) + v * T2]
+    cov = [[sigma_t ** 2 * T1, sigma_t ** 2 * T1],
+           [sigma_t ** 2 * T1, sigma_t ** 2 * T2]]
+    rv = multivariate_normal(mean=mean, cov=cov)
+    Y = np.stack([np.log(S1_grid), np.log(S2_grid)], axis=-1)
+    return rv.pdf(Y) / (S1_grid * S2_grid)
+
+
+def conditional_prob_leg3(S2_grid, K3, T2, T3, sigma_t):
+    """P(S_t3 <= K3 | S_t2), the leg-3 transition conditional on leg 2 alone
+    - the Markov property of Brownian motion means this does NOT depend on
+    S_t1, only on S_t2 and the time gap (T3-T2)."""
+    v = MU - 0.5 * sigma_t ** 2
+    dt3 = T3 - T2
+    m3 = np.log(S2_grid) + v * dt3
+    s3 = sigma_t * np.sqrt(dt3)
+    return norm.cdf((np.log(K3) - m3) / s3)
+
+
+print(f"Fetching S&P 500 path from {ENTRY_DATE} to {OBS_DATE_1}...")
+close = fetch_daily_closes(TICKER, ENTRY_DATE, OBS_DATE_1, fred_series=FRED_SERIES)
+close = close[close.index < pd.Timestamp(OBS_DATE_1)]  # stop the day before t1 (T1 must stay > 0)
+S0 = float(close.iloc[0])
+K1 = K2 = K3 = REF_PCT * S0
+
+print("Fetching VIX / VIX3M / VIX6M term structure for the same window...")
+vol_term_structure = {}
+for ticker, tenor_days in VOL_TERM_STRUCTURE_TICKERS.items():
+    fred_series = VIX_FRED_SERIES if ticker == "^VIX" else None
+    series = fetch_daily_closes(ticker, ENTRY_DATE, OBS_DATE_1, fred_series=fred_series)
+    vol_term_structure[tenor_days / 365.25] = (series / 100.0).reindex(close.index).ffill().bfill()
+
+t1_date, t2_date, t3_date = pd.Timestamp(OBS_DATE_1), pd.Timestamp(OBS_DATE_2), pd.Timestamp(OBS_DATE_3)
+dates = close.index
+n_frames = len(dates)
+T1_years = np.array([(t1_date - d).days / 365.25 for d in dates])
+T2_years = np.array([(t2_date - d).days / 365.25 for d in dates])
+T3_years = np.array([(t3_date - d).days / 365.25 for d in dates])
+sigma_t_series = np.array([
+    interpolate_implied_vol({tenor: s.loc[d] for tenor, s in vol_term_structure.items()}, T1_years[i])
+    for i, d in enumerate(dates)
+])
+S_t_series = close.values
+
+# --- One-time offline validation 1: sequential triple integral vs. closed-form Phi3 ---
+i_check = n_frames // 2
+S_chk, sig_chk = S_t_series[i_check], sigma_t_series[i_check]
+T1_chk, T2_chk, T3_chk = T1_years[i_check], T2_years[i_check], T3_years[i_check]
+
+literal = sequential_triple_integral(S_chk, K1, K2, K3, T1_chk, T2_chk, T3_chk, sig_chk, MU)
+closed_form = p3(S_chk, K1, K2, K3, T1_chk, T2_chk, T3_chk, sig_chk)
+
+print(f"\nValidating the literal sequential triple integral against the closed-form Phi3")
+print(f"(at {dates[i_check].date()}, K1=K2=K3={REF_PCT:.0%} of S0):")
+print(f"  Sequential triple integral (numerical): {literal:.6f}")
+print(f"  Closed-form Phi3 (joint trivariate CDF): {closed_form:.6f}")
+print(f"  Relative difference: {abs(literal - closed_form) / closed_form:.4%}  "
+      f"({'PASS' if abs(literal - closed_form) / closed_form < 0.01 else 'FAIL - investigate'})")
+
+# --- One-time offline validation 2: law of total probability on the actual rendered grid ---
+axis_lo, axis_hi = 0.5 * S0, 1.8 * S0
+s1_grid = np.linspace(axis_lo, axis_hi, GRID_N)
+s2_grid = np.linspace(axis_lo, axis_hi, GRID_N)
+S1_mesh, S2_mesh = np.meshgrid(s1_grid, s2_grid)
+
+density_chk = bivariate_lognormal_density(S1_mesh, S2_mesh, S_chk, T1_chk, T2_chk, sig_chk)
+cond_chk = conditional_prob_leg3(S2_mesh, K3, T2_chk, T3_chk, sig_chk)
+region_mask = (S1_mesh <= K1) & (S2_mesh <= K2)  # P3 requires S_t1<=K1 AND S_t2<=K2 too, not just S_t3<=K3
+ds1, ds2 = s1_grid[1] - s1_grid[0], s2_grid[1] - s2_grid[0]
+grid_integral = float(np.sum(density_chk * cond_chk * region_mask) * ds1 * ds2)
+
+print(f"\nValidating the law of total probability on the SAME (S_t1,S_t2) grid this file renders")
+print(f"(P3 = integral of density(S1,S2) * P(S_t3<=K3|S_t2), restricted to S_t1<=K1 & S_t2<=K2):")
+print(f"  Grid Riemann-sum estimate: {grid_integral:.6f}")
+print(f"  Closed-form Phi3:          {closed_form:.6f}")
+print(f"  Relative difference: {abs(grid_integral - closed_form) / closed_form:.4%}  "
+      f"({'PASS' if abs(grid_integral - closed_form) / closed_form < 0.02 else 'FAIL - investigate'})")
+
+# --- Precompute every frame (all closed-form - fast, no simulation) ---
+density_frames = [bivariate_lognormal_density(S1_mesh, S2_mesh, S_t_series[i], T1_years[i], T2_years[i],
+                                               sigma_t_series[i])
+                  for i in range(n_frames)]
+cond_frames = [conditional_prob_leg3(S2_mesh, K3, T2_years[i], T3_years[i], sigma_t_series[i])
+               for i in range(n_frames)]
+P3_series = np.array([
+    p3(S_t_series[i], K1, K2, K3, T1_years[i], T2_years[i], T3_years[i], sigma_t_series[i])
+    for i in range(n_frames)
+])
+
+Z_MAX = max(z.max() for z in density_frames)
+
+fig = plt.figure(figsize=(9.5, 9), facecolor="white")
+ax = fig.add_subplot(projection="3d")
+cmap = plt.get_cmap("hsv")  # dark = unlikely to clear t3, bright yellow = likely to clear t3
+mappable = plt.cm.ScalarMappable(norm=plt.Normalize(0, 1), cmap=cmap)
+mappable.set_array([])
+cbar = fig.colorbar(mappable, ax=ax, shrink=0.55, pad=0.1)
+cbar.set_label("P(S_t3 <= K3 | S_t2)")
+
+
+def style_axes():
+    ax.set_facecolor("white")
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.pane.set_facecolor("white")
+        axis.pane.set_edgecolor("whitesmoke")
+        axis.pane.set_alpha(1.0)
+        axis._axinfo["grid"]["color"] = (0.88, 0.88, 0.88, 0.6)
+    ax.tick_params(colors="dimgrey", labelsize=8)
+
+
+def draw_frame(frame):
+    ax.cla()
+    style_axes()
+    S_t, T1, T2, T3, sigma_t, date = (S_t_series[frame], T1_years[frame], T2_years[frame],
+                                       T3_years[frame], sigma_t_series[frame], dates[frame])
+
+    ax.plot_surface(S1_mesh, S2_mesh, density_frames[frame], facecolors=cmap(cond_frames[frame]),
+                     rstride=1, cstride=1, shade=False, antialiased=True, linewidth=0)
+
+    # K1, K2 mark the quadrant P3(t) actually integrates over (S_t1<=K1 AND
+    # S_t2<=K2) - the surface itself covers the whole domain for context,
+    # same convention as the 1D/2D companions (shade/highlight only part of
+    # a fully-shown curve or contour).
+    ax.plot([K1, K1], [axis_lo, K2], [0, 0], color="black", linewidth=1.6, linestyle="dashed")
+    ax.plot([axis_lo, K1], [K2, K2], [0, 0], color="black", linewidth=1.6, linestyle="dashed")
+
+    ax.set_xlim(axis_lo, axis_hi)
+    ax.set_ylim(axis_lo, axis_hi)
+    ax.set_zlim(0, Z_MAX * 1.05)
+    ax.set_xlabel("S_t1  (2025-06-30)", labelpad=8, color="dimgrey")
+    ax.set_ylabel("S_t2  (2025-09-30)", labelpad=8, color="dimgrey")
+    ax.set_zlabel("Joint density of (S_t1, S_t2)", labelpad=8, color="dimgrey")
+    ax.view_init(elev=25, azim=-60)
+
+    fig.suptitle(
+        f"{date.date()}   |   S_t = {S_t:,.0f}    sigma_t = {sigma_t:.1%}    "
+        f"T1={T1*365:.0f}d  T2={T2*365:.0f}d  T3={T3*365:.0f}d    K1=K2=K3={REF_PCT:.0%} of S0\n"
+        f"Height = joint density of (S_t1,S_t2)   Color = P(S_t3<=K3 | S_t2)\n"
+        f"P3(t) = {P3_series[frame]:.2%}  (density x color, integrated over the dashed S_t1<=K1, S_t2<=K2 quadrant only)",
+        fontsize=10.5, color="dimgrey"
+    )
+    return []
+
+
+anim = animation.FuncAnimation(fig, draw_frame, frames=n_frames, interval=80, blit=False)
+
+OUTPUT_GIF = __file__ + ".gif"
+print(f"\nRendering {n_frames} frames to {OUTPUT_GIF} ...")
+anim.save(OUTPUT_GIF, writer=animation.PillowWriter(fps=12))
+print("Done.")
+
+plt.show()

@@ -1,0 +1,91 @@
+import os
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+ENTRY_DATE = "2025-01-02"
+TENOR = 1
+
+TICKER = "^GSPC"
+FRED_SERIES = "SP500"
+
+def fetch_daily_closes(ticker, start, end, fred_series=None):
+    series = None
+
+    try:
+        import yfinance as yf
+        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+        if data is not None and not data.empty:
+            close = data["Close"]
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            series = close.dropna()
+    except Exception as exc:
+        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
+
+    if (series is None or series.empty) and fred_series:
+        try:
+            import pandas_datareader.data as web
+            data = web.DataReader(fred_series, "fred", start, end)
+            series = data[fred_series].dropna()
+        except Exception as exc:
+            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
+
+    if series is None or series.empty:
+        raise RuntimeError(f"No data returned for {ticker}")
+
+    return series
+
+
+def fetch_index_path(entry_date, years=TENOR):
+    start = pd.Timestamp(entry_date)
+    end = start + pd.DateOffset(years=years)
+    return fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+
+
+def plot_path(path, S0):
+    index_return_pct = (path / S0 - 1) * 100
+
+    _, ax = plt.subplots(figsize=(13, 8))
+    ax.plot(index_return_pct.index, index_return_pct.values, color="indianred", linewidth=1.5,
+            label="S&P 500")
+
+    ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
+    ax.axhline(0, color="lightgrey", linewidth=0.8)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Return from Entry (%)", color="indianred")
+    ax.tick_params(axis="y", labelcolor="firebrick")
+    ax.set_title(f"S&P 500 Price Return Path from {path.index[0].date()} to {path.index[-1].date()}")
+    lines, labels = ax.get_legend_handles_labels()
+    ax.margins(x=0, y=0.05)
+
+    legend = ax.legend(lines, labels, loc="upper left", frameon=True)
+    legend.get_frame().set_edgecolor("lightgrey")
+    legend.get_frame().set_facecolor("white")
+    plt.tight_layout()
+
+    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "price_return.png")
+    plt.savefig(out_path, dpi=150)
+    print(f"Saved plot to {out_path}")
+    plt.show()
+
+
+def main():
+    print(f"Fetching {TICKER} price path from {ENTRY_DATE} for {TENOR}y...")
+    path = fetch_index_path(ENTRY_DATE, years=TENOR)
+    S0 = path.iloc[0]
+
+    final_return_pct = (path.iloc[-1] / S0 - 1) * 100
+    max_return_pct = (path.max() / S0 - 1) * 100
+    min_return_pct = (path.min() / S0 - 1) * 100
+    print(f"Entry: {path.index[0].date()} @ {S0:.2f}")
+    print(f"Latest: {path.index[-1].date()} @ {path.iloc[-1]:.2f}")
+    print(f"Return: {final_return_pct:+.2f}% (max {max_return_pct:+.2f}%, min {min_return_pct:+.2f}%)")
+
+    plot_path(path, S0)
+
+
+if __name__ == "__main__":
+    main()
+    
