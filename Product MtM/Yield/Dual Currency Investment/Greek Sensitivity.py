@@ -7,6 +7,20 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    realized_annualized_vol,
+    _quantlib_process,
+    zcb_price_and_greeks,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
@@ -21,9 +35,7 @@ ISSUER_CDS_SPREAD = 0.005308
 ENTRY_DATE = "2025-01-02"
 TENOR = 0.25
 
-# T, strike and rates are fixed constants throughout this whole analysis -
-# the only thing that varies below is spot. Vol is also held at its
-# inception (realized) value for every row.
+# T, strike, rates and vol fixed throughout; only spot varies below.
 SPOT_SCENARIO_RANGE = np.arange(0.80, 1.21, 0.02)  # 80% to 120% of S0, in 2pt steps
 
 
@@ -53,29 +65,6 @@ def fetch_fx_path(deposit_ccy, alt_ccy, entry_date, years=TENOR):
     return series
 
 
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
-
-
-def zcb_price_and_greeks(principal, T_remaining, funding_rate):
-    discount = (1 + funding_rate) ** T_remaining
-    price = principal / discount
-    rho = -T_remaining * price / (1 + funding_rate)
-    theta = price * np.log(1 + funding_rate)
-    return {"price": price, "rho": rho, "theta": theta}
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
 def black_scholes_put(S, K, T, r, sigma, q=0.0):
     """Plain European put via QuantLib's AnalyticEuropeanEngine. With q set
     to the ALT currency's own short rate, this process IS Garman-Kohlhagen -
@@ -89,7 +78,7 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -115,11 +104,8 @@ def dci_mtm(S, S0, T_remaining, sigma, r=DEPOSIT_RATE, alt_rate=ALT_RATE, credit
     }
 
 
-# ---------------------------------------------------------------------------
-# GREEKS LADDER - see the Reverse Convertible's Greek Sensitivity.py for the
-# full rationale. T, strike and rates are held constant; only spot varies.
-# Theta is excluded since T never moves in this analysis.
-# ---------------------------------------------------------------------------
+# GREEKS LADDER: T, strike and rates fixed; only spot varies. Theta excluded
+# (T never moves). See README.
 
 def greek_sensitivity_table(S0, T, sigma, r=DEPOSIT_RATE, alt_rate=ALT_RATE, spot_multiples=SPOT_SCENARIO_RANGE):
     rows = []
@@ -141,7 +127,7 @@ def plot_greek_sensitivity(table, S0, T, sigma, r, pair_label):
     spot = table["Spot (% of S0)"]
 
     panels = [
-        ("Price (% of Par)", "Fair Value (% of Par)", "firebrick"),
+        ("Price (% of Par)", "Model Value (% of Par)", "firebrick"),
         ("Delta", "Delta", "darkred"),
         ("Vega (per 1% vol)", "Vega (per 1% change in vol)", "indianred"),
         ("Rho (per 1% rate)", "Rho (per 1% change in rate)", "brown"),

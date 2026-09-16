@@ -8,6 +8,25 @@ from scipy.optimize import brentq
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    interpolate_implied_vol,
+    fetch_trailing_realized_vol,
+    realized_annualized_vol,
+    max_drawdown,
+    _quantlib_process,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
@@ -35,69 +54,18 @@ VIX_FRED_SERIES = "VIXCLS"
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
 
 
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q. Indices
-    ("^" tickers) are treated as paying none. See the README in this
-    folder for the full rationale and field-selection notes."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
-
-
 def fetch_index_path(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
-    return fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    path = fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    if path.index[-1] < end - pd.Timedelta(days=10):
+        raise RuntimeError(
+            f"Requested window {start.date()} to {end.date()} extends past the last available "
+            f"trading day ({path.index[-1].date()}) - this script models a COMPLETED historical "
+            f"window, not a live in-progress note. Pick an ENTRY_DATE/TENOR combination that ends "
+            f"on or before today."
+        )
+    return path
 
 
 def fetch_vol_term_structure(entry_date, years=TENOR):
@@ -119,33 +87,6 @@ def fetch_vol_term_structure(entry_date, years=TENOR):
     return term_structure
 
 
-def interpolate_implied_vol(vols_by_tenor, T_years):
-    points = sorted(vols_by_tenor.items())
-
-    if T_years <= points[0][0]:
-        return points[0][1]
-    if T_years >= points[-1][0]:
-        return points[-1][1]
-
-    for (t0, v0), (t1, v1) in zip(points, points[1:]):
-        if t0 <= T_years <= t1:
-            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
-            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
-            return np.sqrt(var_T / T_years)
-
-    return points[-1][1]
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
 def black_scholes_call(S, K, T, r, sigma, q=0.0):
     """Plain European call via QuantLib's AnalyticEuropeanEngine (dividend
     yield q is a native input)."""
@@ -158,7 +99,7 @@ def black_scholes_call(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Call, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -171,21 +112,7 @@ def black_scholes_call(S, K, T, r, sigma, q=0.0):
 
 
 def lepo_price_and_greeks(S, T, q=0.0):
-    """
-    LEPO (Low Exercise Price Option): a call struck at ~0, always exercised
-    at maturity, so its value is the risk-neutral PV of receiving one share
-    at T - the "prepaid forward" price S*e^(-qT). This equals spot exactly
-    only when q=0 (no dividends): a real dividend-paying stock's LEPO is
-    worth LESS than spot today, since the option holder only receives the
-    share at maturity and so forgoes every dividend paid before then -
-    ignoring this would make the replication theoretically inconsistent
-    for any dividend-paying underlying. Priced directly here (not via
-    black_scholes_call with K~0) since it has an exact closed form and K=0
-    is a numerically awkward input for a general option-pricing engine
-    (d1/d2 blow up as K->0). Independent of r entirely - a well-known
-    identity (the PV of a future share delivery carries no rate exposure,
-    unlike a strike-bearing option).
-    """
+    """LEPO closed form, S*e^(-qT) - see MATHEMATICS.md section 1."""
     discount_q = np.exp(-q * T)
     return {
         "price": S * discount_q, "delta": discount_q, "vega": 0.0, "rho": 0.0,
@@ -193,43 +120,13 @@ def lepo_price_and_greeks(S, T, q=0.0):
     }
 
 
-# ---------------------------------------------------------------------------
-# REPLICATION: Discount Certificate = LEPO - Short Call
-#
-# A LEPO (Low Exercise Price Option) is a call struck at ~0 - always
-# exercised, so its price is the prepaid-forward value of the underlying
-# (see lepo_price_and_greeks - exactly spot only when the underlying pays
-# no dividend). Owning it is economically identical to owning the
-# underlying outright via a forward purchase, with no strike/premium
-# involved.
-#
-# The short call (struck at CAP) is priced via QuantLib and subtracted.
-# Selling it caps the upside at CAP, and the premium received is what
-# funds buying the LEPO leg at a discount to spot today - the whole
-# point of a "discount certificate". CAP is the only real strike in this
-# product - DISCOUNT is not a strike, it's the resulting fair-value-vs-par
-# gap that CAP (plus vol/rate/tenor) produces. In practice an issuer
-# usually works backward from a target discount to whichever CAP funds
-# it, so that's the direction this script solves in too (see
-# solve_cap_for_discount) - DISCOUNT is the hand-set dial, CAP is derived.
-#
-# Payoff at maturity: S_T - max(S_T - Cap, 0) = min(S_T, Cap).
-# ---------------------------------------------------------------------------
+# REPLICATION: LEPO - Short Call(Cap). DISCOUNT is not a strike - it's the
+# resulting fair-value-vs-par gap that Cap produces; solve_cap_for_discount
+# inverts that relationship. See README.md and MATHEMATICS.md.
 
 def solve_cap_for_discount(S0, T, sigma, target_discount, r=RISK_FREE_RATE, q=0.0):
-    """
-    Solve for the CAP (as a fraction of S0) that makes the certificate's
-    fair value at inception equal S0*(1 - target_discount) - i.e. finds
-    the short call strike that funds exactly the target discount to spot.
-
-    Fair value (LEPO - short call) is monotonically INCREASING in CAP: a
-    higher/more-OTM cap sells a cheaper call, funding a smaller discount
-    (fair value closer to par). So there's exactly one root in
-    (100%, 1000% of S0] for any reachable target discount, found here via
-    Brent's method (scipy.optimize.brentq) - no closed-form inverse for a
-    Black-Scholes call strike given a target price, so this is a genuine
-    root-find, not an algebraic rearrangement.
-    """
+    """Root-finds Cap so fair value = S0*(1-target_discount) - see
+    MATHEMATICS.md section 3 for why this needs Brent's method."""
     target_price = S0 * (1 - target_discount)
 
     def fair_value_gap(cap_multiple):
@@ -270,17 +167,6 @@ def discount_certificate_mtm_price_series(S0, path, vol_term_structure, r=RISK_F
     return pd.Series(prices, index=path.index)
 
 
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
-
-
-def max_drawdown(path):
-    running_max = path.cummax()
-    drawdown = path / running_max - 1
-    return drawdown.min()
-
-
 def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=None, q=0.0):
     index_return_pct = (path / S0 - 1) * 100
     cert_return_pct = discount_certificate_running_return(S0, path) * 100
@@ -290,7 +176,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
             label=underlying_name)
     ax.tick_params(axis="y", labelcolor="firebrick")
     ax.plot(cert_return_pct.index, cert_return_pct.values, color="indianred", linewidth=1.5,
-            linestyle="dashed", label="Discount Certificate Participation Tracker")
+            linestyle="dashed", label="Discount Certificate Redemption Payoff (Relative to Par)")
 
     ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
     ax.axhline(0, color="lightgrey", linewidth=0.8)
@@ -321,8 +207,8 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
         ax2 = ax.twinx()
         mtm_line, = ax2.plot(
             mtm_gain_over_par_pct.index, mtm_gain_over_par_pct.values, color="darkred", linewidth=1.5,
-            linestyle="solid", label="Discount Certificate - Approximate MtM (% of Par, Black-Scholes)")
-        ax2.set_ylabel("MtM Fair Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
+            linestyle="solid", label="Discount Certificate — Model Value (% of Par, Black-Scholes)")
+        ax2.set_ylabel("Model Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
         ax2.tick_params(axis="y", labelcolor="darkred")
 
         combined_min = min(index_return_pct.min(), cert_return_pct.min(), mtm_gain_over_par_pct.min())
@@ -336,7 +222,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
 
     end_date = index_return_pct.index[-1]
     ax.set_title(f"{underlying_name} Price Return Path from {path.index[0].date()} to {end_date.date()} \n"
-                 f"vs Approximate Mark-to-Market (MtM) Value of Discount Certificate")
+                 f"vs Model Value vs. Par — Discount Certificate")
     ax.legend(lines, labels, loc="upper left", fontsize=9)
     plt.tight_layout()
     plt.savefig(OUTPUT_PNG, dpi=150, bbox_inches="tight")
@@ -356,14 +242,24 @@ if __name__ == "__main__":
     dividend_yield = fetch_dividend_yield(TICKER)
     print(f"Dividend yield for {underlying_name} ({TICKER}): {dividend_yield:.2%} (flat, continuous - 0% if an index)")
 
-    print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
-    raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
-    vol_term_structure = {
-        tenor: series.reindex(path.index).ffill().bfill()
-        for tenor, series in raw_term_structure.items()
-    }
-    vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
-    entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+    if TICKER.startswith("^"):
+        print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
+        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        vol_term_structure = {
+            tenor: series.reindex(path.index).ffill().bfill()
+            for tenor, series in raw_term_structure.items()
+        }
+        vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
+        entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+        vol_source_desc = f"interpolated from the {path.index[0].date()} VIX/VIX3M/VIX6M term structure"
+    else:
+        print(f"\n{TICKER} is a single name - no free historical implied-vol source exists for it, so")
+        print(f"using its own trailing 2y REALIZED volatility instead of the SPX VIX/VIX3M/VIX6M proxy")
+        print(f"(held flat for the note's life, same technique as the DCI/Multi-FCN/Multi-RC products):")
+        entry_vol = fetch_trailing_realized_vol(TICKER, ENTRY_DATE)
+        vol_term_structure = {TENOR: pd.Series(entry_vol, index=path.index)}
+        vol_source_desc = f"{TICKER}'s own trailing 2y realized vol (not VIX-derived)"
+        print(f"  {entry_vol:.2%}")
 
     print(f"\nSolving for the CAP that funds a {DISCOUNT:.2%} discount to spot at inception")
     print(f"(S=S0, T={TENOR}y, vol={entry_vol:.2%}, dividend yield {dividend_yield:.2%}):")
@@ -380,7 +276,7 @@ if __name__ == "__main__":
         "Target Discount": f"{DISCOUNT:.2%}",
         "Cap Level (resolved)": f"{CAP * S0:,.2f}",
         f"{underlying_name} Return": f"{S_T / S0 - 1:.2%}",
-        "Discount Certificate Return": f"{cert_return:.2%}",
+        "Discount Certificate — Redemption Payoff (vs. Par)": f"{cert_return:.2%}",
         "Realized Vol (ann.)": f"{vol:.2%}",
         "Max Drawdown": f"{max_drawdown(path):.2%}",
     })
@@ -391,9 +287,9 @@ if __name__ == "__main__":
     fair_value_pct_of_par = greeks["price"] / S0
     discount_to_spot = 1 - fair_value_pct_of_par
 
-    print(f"\nDiscount Certificate fair value at inception")
-    print(f"(QuantLib Black-Scholes-Merton, S=S0, T={TENOR}y, vol={entry_vol:.2%} interpolated from the")
-    print(f"{path.index[0].date()} VIX/VIX3M/VIX6M term structure for a {TENOR}y maturity, dividend")
+    print(f"\nDiscount Certificate — model value at inception")
+    print(f"(QuantLib Black-Scholes-Merton, S=S0, T={TENOR}y, vol={entry_vol:.2%}")
+    print(f"{vol_source_desc}, dividend")
     print(f"yield {dividend_yield:.2%}):")
     print(f"  {fair_value_pct_of_par:.2%} of par")
     print(f"  Discount to spot: {discount_to_spot:+.2%}  (target was {DISCOUNT:+.2%} - should match to")
@@ -409,7 +305,7 @@ if __name__ == "__main__":
     print(f"  Rho:   {greeks['rho'] / S0 * 0.01:.4f}  (per 1% change in rates)")
     print(f"  Theta: {greeks['theta'] / S0:.4f} per year / {greeks['theta'] / S0 / 365:.5f} per day")
 
-    print(f"\nMTM Fair Value vs. Spot at Inception:")
+    print(f"\nModel Value vs. Spot at Inception:")
     print(f"  Price: {greeks['price']:,.2f}  vs. Spot (S0): {S0:,.2f}  ({fair_value_pct_of_par:.2%} of spot, "
           f"a {discount_to_spot:+.2%} discount)")
 

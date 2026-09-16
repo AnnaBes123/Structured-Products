@@ -5,36 +5,11 @@ import matplotlib.animation as animation
 from scipy.stats import norm, multivariate_normal
 from scipy.integrate import quad
 
-# ---------------------------------------------------------------------------
-# 3D evolving probability, collapsed into a 2D surface:
-#   P3(t) = P(S_t1 <= K1, S_t2 <= K2, S_t3 <= K3)
-# t1=2025-06-30 (Q2), t2=2025-09-30 (Q3), t3=2025-12-31 (Q4). A genuine 3D
-# object (3 barriers) can't be shown as a single time-series line the way
-# the 1D/2D companions are, so instead this fixes K3 and shows P3 as a
-# SURFACE over a (K1, K2) grid - the same visualization strategy as the
-# static "Autocall Density" script in this folder, now animated day by day
-# on real 2025 S&P 500 data, exactly like the 1D/2D companions.
-#
-# CLOSED FORM (used for the live animation - fast enough for a full grid on
-# every frame): (y1,y2,y3) = (ln S_t1, ln S_t2, ln S_t3) is jointly normal
-# with mean_i = ln S_t + v*Ti and corr(yi,yj) = sqrt(min(Ti,Tj)/max(Ti,Tj))
-# (same Brownian-motion argument as the 2D file), so
-#   P3(t) = Phi3(d1, d2, d3; R),  d_i = (ln Ki - ln S_t - v*Ti)/(sigma_t*sqrt(Ti))
-#
-# TRIPLE INTEGRAL SOLUTION (as requested - see sequential_triple_integral
-# below): P3 = int int int phi1(y1|St) phi2(y2|y1) phi3(y3|y2) dy1 dy2 dy3,
-# where phi1 is the transition density from "now" to t1, phi2 is the
-# transition density from t1 to t2 GIVEN y1 (Brownian motion has independent
-# increments, so this only depends on y1, not on the whole history), and
-# phi3 likewise from t2 to t3 given y2. The innermost integral over y3 has a
-# closed form (it's just a Gaussian CDF), so this is implemented as a
-# genuine nested NUMERICAL double integral on top of that closed inner step
-# - a "semi-analytic" triple integral, not a re-derivation of Phi3. It is
-# run ONCE below as an offline validation against the closed form (matching
-# this repo's established validate-once pattern), not on every frame - full
-# brute-force 3D numerical integration at ~100x100 grid points x ~120 frames
-# would be far too slow to be practical.
-# ---------------------------------------------------------------------------
+# 3D evolving probability P3(t) = P(S_t1<=K1, S_t2<=K2, S_t3<=K3), collapsed
+# into a (K1,K2) surface (K3 fixed) since a genuine 3D object can't be a
+# single time-series line. Closed form Phi3 drives the live animation;
+# sequential_triple_integral below is a one-time offline validation of it.
+# See README.md for the full Phi2/Phi3 derivation and validation approach.
 
 ENTRY_DATE = "2025-01-02"
 OBS_DATE_1 = "2025-06-30"  # t1: end of Q2

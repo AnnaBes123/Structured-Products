@@ -7,6 +7,23 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    interpolate_implied_vol,
+    fetch_trailing_realized_vol,
+    _quantlib_process,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
@@ -23,70 +40,8 @@ FRED_SERIES = "SP500"
 VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
 VIX_FRED_SERIES = "VIXCLS"
 
-# T, strike and the funding curve are fixed constants throughout this
-# whole analysis - the only thing that varies below is spot. Vol is also
-# held at its inception value for every row.
+# T, strike, funding curve and vol fixed; only spot varies below.
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
-
-
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q - lets
-    TICKER be either a stock (real yield applied) or an index (q=0).
-    See the README in this folder for the full rationale and
-    field-selection notes."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
 
 
 def fetch_index_path(entry_date, years=TENOR):
@@ -114,33 +69,6 @@ def fetch_vol_term_structure(entry_date, years=TENOR):
     return term_structure
 
 
-def interpolate_implied_vol(vols_by_tenor, T_years):
-    points = sorted(vols_by_tenor.items())
-
-    if T_years <= points[0][0]:
-        return points[0][1]
-    if T_years >= points[-1][0]:
-        return points[-1][1]
-
-    for (t0, v0), (t1, v1) in zip(points, points[1:]):
-        if t0 <= T_years <= t1:
-            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
-            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
-            return np.sqrt(var_T / T_years)
-
-    return points[-1][1]
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
 def put_warrant_price(S, K, T, r, sigma, q=0.0):
     """Plain European put via QuantLib's AnalyticEuropeanEngine - this IS
     the entire product, so this closed-form engine gives its price AND
@@ -155,7 +83,7 @@ def put_warrant_price(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -167,20 +95,9 @@ def put_warrant_price(S, K, T, r, sigma, q=0.0):
     }
 
 
-# ---------------------------------------------------------------------------
-# GREEKS LADDER
-#
-# T, strike and the funding curve are held constant throughout - the ONLY
-# thing that varies across rows is spot. Vol is also pinned at its
-# inception value for every row.
-#
-# Unlike every note/certificate product in this repo, there is no par
-# value to express price/Greeks against - a warrant is a naked long
-# option, not a prepackaged debt instrument. Price and Greeks are
-# reported in RAW units here (underlying price points/$, standard
-# per-1%-vol / per-1%-rate / per-year scalings), same convention as
-# "Put Warrant.py".
-# ---------------------------------------------------------------------------
+# GREEKS LADDER: T, strike, funding curve and vol fixed; only spot varies.
+# No par value here (a warrant is a naked option) - price/Greeks reported
+# in raw underlying-price units, same convention as Put Warrant.py.
 
 def greek_sensitivity_table(S0, T, sigma, r=RISK_FREE_RATE, spot_multiples=SPOT_SCENARIO_RANGE, q=0.0):
     K = STRIKE * S0
@@ -248,10 +165,18 @@ if __name__ == "__main__":
 
     dividend_yield = fetch_dividend_yield(TICKER)
 
-    print(f"Fetching SPX implied vol term structure for {ENTRY_DATE}...")
-    raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
-    vols_at_entry = {tenor: series.iloc[0] for tenor, series in raw_term_structure.items()}
-    entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+    if TICKER.startswith("^"):
+        print(f"Fetching SPX implied vol term structure for {ENTRY_DATE}...")
+        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        vols_at_entry = {tenor: series.iloc[0] for tenor, series in raw_term_structure.items()}
+        entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+        vol_source_desc = f"the VIX/VIX3M/VIX6M term structure on {ENTRY_DATE}"
+    else:
+        print(f"{TICKER} is a single name - using its own trailing 2y realized volatility instead of")
+        print(f"the SPX VIX/VIX3M/VIX6M proxy:")
+        entry_vol = fetch_trailing_realized_vol(TICKER, ENTRY_DATE)
+        vol_source_desc = f"{TICKER}'s own trailing 2y realized vol (not VIX-derived)"
+        print(f"  {entry_vol:.2%}")
 
     print(f"\nFixed throughout (only spot varies below):")
     print(f"  Underlying:      {underlying_name} ({TICKER})")
@@ -259,7 +184,7 @@ if __name__ == "__main__":
     print(f"  S0 (spot):       {S0:,.2f}")
     print(f"  Strike:          {STRIKE:.0%} of S0")
     print(f"  Tenor (T):       {TENOR} year(s)")
-    print(f"  Vol (sigma):     {entry_vol:.2%}  (from the VIX/VIX3M/VIX6M term structure on {ENTRY_DATE})")
+    print(f"  Vol (sigma):     {entry_vol:.2%}  (from {vol_source_desc})")
     print(f"  Rate:            {RISK_FREE_RATE:.2%}")
     print(f"  Dividend yield:  {dividend_yield:.2%}  (flat, continuous - 0% if an index)")
 

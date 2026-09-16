@@ -7,6 +7,26 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    interpolate_implied_vol,
+    fetch_trailing_realized_vol,
+    realized_annualized_vol,
+    max_drawdown,
+    _quantlib_process,
+    zcb_price_and_greeks,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
@@ -32,76 +52,20 @@ VIX_FRED_SERIES = "VIXCLS"
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
 
 
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q. Indices
-    ("^" tickers) are treated as paying none. See the README in this
-    folder for the full rationale and field-selection notes."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
-
-
 def fetch_index_path(entry_date, years=TENOR):
-    """
-    Returns the daily CLOSE series. The barrier is observed "on close" -
-    breach is determined from the same daily closing price used for
-    valuation, matching how the CRR forward-pricing lattice already checks
-    the barrier once per trading day (see the Barrier Reverse Convertible
-    product's README, Product MtM/Yield/, for the full rationale).
-    """
+    """Daily CLOSE series - the barrier is observed on close. See README
+    "How the daily MTM tracks the barrier"."""
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
-    return fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    path = fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    if path.index[-1] < end - pd.Timedelta(days=10):
+        raise RuntimeError(
+            f"Requested window {start.date()} to {end.date()} extends past the last available "
+            f"trading day ({path.index[-1].date()}) - this script models a COMPLETED historical "
+            f"window, not a live in-progress note. Pick an ENTRY_DATE/TENOR combination that ends "
+            f"on or before today."
+        )
+    return path
 
 
 def fetch_vol_term_structure(entry_date, years=TENOR):
@@ -123,41 +87,6 @@ def fetch_vol_term_structure(entry_date, years=TENOR):
     return term_structure
 
 
-def interpolate_implied_vol(vols_by_tenor, T_years):
-    points = sorted(vols_by_tenor.items())
-
-    if T_years <= points[0][0]:
-        return points[0][1]
-    if T_years >= points[-1][0]:
-        return points[-1][1]
-
-    for (t0, v0), (t1, v1) in zip(points, points[1:]):
-        if t0 <= T_years <= t1:
-            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
-            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
-            return np.sqrt(var_T / T_years)
-
-    return points[-1][1]
-
-
-def zcb_price_and_greeks(principal, T_remaining, funding_rate):
-    discount = (1 + funding_rate) ** T_remaining
-    price = principal / discount
-    rho = -T_remaining * price / (1 + funding_rate)
-    theta = price * np.log(1 + funding_rate)
-    return {"price": price, "rho": rho, "theta": theta}
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
 def black_scholes_call(S, K, T, r, sigma, q=0.0):
     """Plain (no barrier) European call via QuantLib's AnalyticEuropeanEngine
     (dividend yield q is a native input) - used only for the closed-form
@@ -172,7 +101,7 @@ def black_scholes_call(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Call, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -184,57 +113,18 @@ def black_scholes_call(S, K, T, r, sigma, q=0.0):
     }
 
 
-# ---------------------------------------------------------------------------
-# REPLICATION: Bullish Sharkfin
-#            = Long Zero-Coupon Bond (Principal)
-#            + Long Up-and-Out Call (struck at STRIKE=100% of S0, barrier
-#              BARRIER > STRIKE, checked once per trading day, optional
-#              cash rebate paid immediately if the barrier is touched)
-#
-# The ZCB alone is what makes this a CAPITAL-PROTECTED note: it pays
-# Principal at maturity regardless of anything the option leg does, so
-# "if the underlying finishes below strike, capital is returned at 100%"
-# falls straight out of the call being worthless there - no separate
-# logic needed. This is the opposite financing story to every other
-# barrier product in this repo (Barrier Reverse Convertible, Bonus
-# Certificate, Bonus-Outperformance): there the option leg is SHORT and
-# SUBTRACTED, financing an enhanced coupon at the cost of capital
-# protection; here the option leg is LONG and ADDED on top of a fully
-# protected bond, financed by accepting a cap on how far that
-# participation can run (the barrier) instead of an outright cap level.
-#
-# As long as the index never trades up to the barrier, the investor gets
-# FULL 1:1 upside participation above the strike - unlike the capped
-# products in Product MtM/Participation/, there is no cap on the call
-# itself, only the barrier's all-or-nothing cutoff. Touch the barrier once
-# and the call is knocked out for good (the "fin" shape the product is
-# named for: participation rises with the index, then drops to flat the
-# instant the barrier is touched) - the note then just pays back principal
-# at maturity, plus whatever rebate was already received at the moment of
-# the knock-out (not part of the note's forward MTM from that point on,
-# since it has already been paid).
-#
-# The call is priced on a Cox-Ross-Rubinstein binomial lattice (QuantLib
-# BinomialCRRBarrierEngine), barrier checked once per lattice step, step
-# count = remaining trading days - not the textbook continuous-monitoring
-# closed form, which overstates the touch probability relative to what
-# daily data can ever confirm. See the Barrier Reverse Convertible
-# product's README (Product MtM/Yield/) for the full rationale and lattice
-# mechanics; the same reasoning applies here unchanged, just mirrored onto
-# an upper barrier instead of a lower one.
-# ---------------------------------------------------------------------------
+# REPLICATION: ZCB(Principal) + Long Up-and-Out Call (STRIKE=100% of S0,
+# barrier > strike, optional rebate). Unlike the SHORT-option barrier
+# products elsewhere (BRC, Bonus Certificate), the option leg here is LONG
+# and ADDED to a fully protected bond, financed by capping how far
+# participation can run (the barrier) rather than an outright cap level.
+# Priced on a CRR binomial lattice - see README.md and ../../Yield/Barrier
+# Reverse Convertible/MATHEMATICS.md for the full lattice mechanics.
 
 def up_and_out_call_crr(S, K, H, T, r, sigma, steps, rebate=REBATE, q=0.0):
-    """
-    Up-and-out call, strike K, barrier H > K, priced on a Cox-Ross-
-    Rubinstein binomial lattice with the barrier checked once per step -
-    steps should be the number of remaining trading days, so the model's
-    monitoring frequency matches the daily data it's priced against.
-    Assumes the barrier has NOT already been breached - the caller is
-    responsible for pricing this leg at 0 (the rebate has already been
-    paid and received, so it isn't part of the note's forward MTM) once
-    the barrier has been touched at any point in the note's life so far.
-    """
+    """CRR up-and-out call. Assumes NOT already breached - caller prices
+    this leg at 0 once the barrier has been touched (rebate already paid,
+    not part of forward MTM)."""
     if S >= H:
         return rebate  # at/through the barrier right now: knocked out this instant, worth exactly the rebate
     if T <= 0:
@@ -244,7 +134,7 @@ def up_and_out_call_crr(S, K, H, T, r, sigma, steps, rebate=REBATE, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Call, K)
     option = ql.BarrierOption(ql.Barrier.UpOut, H, rebate, payoff, exercise)
@@ -256,18 +146,8 @@ def up_and_out_call_crr(S, K, H, T, r, sigma, steps, rebate=REBATE, q=0.0):
 
 def bullish_sharkfin_price(S, S0, T_remaining, sigma, breached, r=RISK_FREE_RATE,
                             credit_spread=GS_CDS_SPREAD, steps=None, q=0.0):
-    """
-    Once breached=True, the up-and-out call has permanently knocked out
-    and contributes 0 to the note's forward value (any rebate was already
-    received historically, not still owed) - the note is worth exactly
-    the ZCB from then on, i.e. capital returned at 100%.
-
-    `steps` is the CRR lattice's step count (one barrier check per step) -
-    pass the actual number of remaining trading days when pricing off a
-    real historical path so the model's monitoring frequency matches the
-    data; defaults to an approximate 252-trading-day year if omitted.
-    `q` is the underlying's dividend yield (0 for an index).
-    """
+    """Full note price. Once breached, call contributes 0 (rebate already
+    received) - note is worth exactly the ZCB, capital at 100%."""
     zcb = zcb_price_and_greeks(S0, T_remaining, r + credit_spread)
 
     if breached:
@@ -282,15 +162,8 @@ def bullish_sharkfin_price(S, S0, T_remaining, sigma, breached, r=RISK_FREE_RATE
 
 
 def verify_against_closed_form(S0, T, sigma, r=RISK_FREE_RATE, q=0.0, steps=None):
-    """
-    Barrier pushed unreachable (H -> very high multiple of S0), rebate
-    forced to 0: the up-and-out call can never knock out, so its CRR price
-    should converge onto the plain vanilla call struck at STRIKE -
-    confirms the barrier engine collapses to the ordinary closed form in
-    the no-barrier limit, the same style of check used for the Barrier
-    Reverse Convertible's down-and-in put and the Bonus Certificate's
-    down-and-out put.
-    """
+    """Barrier pushed unreachable: CRR price must converge onto the
+    plain vanilla call (no-barrier limit). See README."""
     K = STRIKE * S0
     n = steps if steps is not None else max(round(T * 252), 1)
 
@@ -302,26 +175,8 @@ def verify_against_closed_form(S0, T, sigma, r=RISK_FREE_RATE, q=0.0, steps=None
 
 
 def bullish_sharkfin_running_return(S0, path):
-    """
-    Participation tracker: the terminal payoff FORMULA applied to today's
-    spot, as a return over par (par/principal itself is always 100%, so
-    this is directly "how much upside participation has this path locked
-    in so far"). NOT what you'd actually receive if the note were sold or
-    unwound today - it ignores all remaining time value in the still-live
-    call, unlike the MTM fair-value line, which is the closest thing to an
-    actual today's-value estimate. If the barrier has never been touched
-    up to today, this is the call's intrinsic value, max(S - Strike, 0) -
-    full upside participation. Once the barrier IS touched, the call is
-    permanently dead - 0% here for every subsequent date, meaning exactly
-    par (100% capital returned), regardless of where the index goes
-    afterward.
-
-    Breach is "conducted on close" - checked against the daily CLOSE, the
-    same price series used for valuation, matching the CRR forward-pricing
-    lattice's own once-per-trading-day observation frequency. A day that
-    spikes through the barrier intraday and closes back below it does NOT
-    knock the call out.
-    """
+    """Redemption Payoff (Relative to Par) - see README "Reading the
+    charts" and "How the daily MTM tracks the barrier"."""
     strike_level = STRIKE * S0
     barrier_level = BARRIER * S0
     breached_so_far = path.cummax() >= barrier_level
@@ -353,37 +208,10 @@ def bullish_sharkfin_mtm_price_series(S0, path, vol_term_structure, r=RISK_FREE_
 
 def finite_difference_greeks_at(S, S0, T, sigma, breached, r=RISK_FREE_RATE, credit_spread=GS_CDS_SPREAD,
                                  steps=None, q=0.0):
-    """
-    Price and Greeks via central finite differences on the FULL note price
-    (not by differentiating the barrier formula further) - barrier-option
-    Greeks are notoriously messy near the barrier (delta in particular can
-    be discontinuous), so a numerical bump is simpler and more robust, same
-    approach as every other barrier product in this repo.
-
-    The CRR step count is fixed ONCE (from the un-bumped T) and reused for
-    every bumped evaluation, including the T-bump for theta - otherwise a
-    tiny T bump could round to a different integer step count and inject
-    lattice-discreteness noise into the Greek instead of the actual
-    sensitivity.
-
-    Bump sizes here are much wider than the "0.1% of spot" convention used
-    for the closed-form (non-barrier) products in this repo. A CRR barrier
-    lattice is rebuilt from scratch on every call, and its node grid scales
-    multiplicatively with both S and sigma (u=e^{sigma*sqrt(dt)}) - as
-    those inputs vary continuously, which nodes fall above/below the FIXED
-    strike/barrier changes in discrete jumps ("sawtooth" artifacts), not
-    smoothly. A small bump can land entirely inside one of those jumps and
-    return a Greek that's off by an order of magnitude. Empirically here
-    (see the finite-difference bump-size scan in the PR/session that added
-    this file): Delta was -0.17 at a 0.1%-of-S0 bump vs. a stable ~-0.02
-    once the bump widens past roughly 1-2% of S0; Vega ranged from -517 to
-    -2508 depending on bump size before settling near -700 around a
-    2-vol-point bump; Rho was unaffected (r doesn't enter the lattice's
-    node spacing, only drift/discounting) and keeps a small bump. These
-    wider bumps trade some truncation error for a much larger reduction in
-    lattice noise - the standard practitioner tradeoff for hedging barrier
-    options priced on a binomial tree.
-    """
+    """Central finite differences on the full note price - wider bumps
+    than the closed-form products. See README "A numerical note on the
+    Greeks: lattice sawtooth noise" for the bump-size scan that motivated
+    these (2% of spot / 2 vol points)."""
     bump_S, bump_sigma, bump_r, bump_T = S0 * 0.02, 0.02, 0.0001, 21 / 365
     n = steps if steps is not None else max(round(T * 252), 1)
 
@@ -411,17 +239,6 @@ def finite_difference_greeks(S0, T, sigma, r=RISK_FREE_RATE, credit_spread=GS_CD
     return finite_difference_greeks_at(S0, S0, T, sigma, False, r, credit_spread, q=q)
 
 
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
-
-
-def max_drawdown(path):
-    running_max = path.cummax()
-    drawdown = path / running_max - 1
-    return drawdown.min()
-
-
 def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=None, q=0.0):
     index_return_pct = (path / S0 - 1) * 100
     sharkfin_return_pct = bullish_sharkfin_running_return(S0, path) * 100
@@ -431,7 +248,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
             label=underlying_name)
     ax.tick_params(axis="y", labelcolor="firebrick")
     ax.plot(sharkfin_return_pct.index, sharkfin_return_pct.values, color="indianred", linewidth=1.5,
-            linestyle="dashed", label="Bullish Sharkfin Participation Tracker")
+            linestyle="dashed", label="Bullish Sharkfin Redemption Payoff (Relative to Par)")
 
     ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
     ax.axhline(0, color="lightgrey", linewidth=0.8)
@@ -476,8 +293,8 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
         ax2 = ax.twinx()
         mtm_line, = ax2.plot(
             mtm_gain_over_par_pct.index, mtm_gain_over_par_pct.values, color="darkred", linewidth=1.5,
-            linestyle="solid", label="Bullish Sharkfin - Approximate MtM (% of Par)")
-        ax2.set_ylabel("MtM Fair Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
+            linestyle="solid", label="Bullish Sharkfin — Model Value (% of Par)")
+        ax2.set_ylabel("Model Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
         ax2.tick_params(axis="y", labelcolor="darkred")
 
         combined_min = min(index_return_pct.min(), sharkfin_return_pct.min(), mtm_gain_over_par_pct.min(), strike_pct)
@@ -491,7 +308,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
 
     end_date = index_return_pct.index[-1]
     ax.set_title(f"{underlying_name} Price Return Path from {path.index[0].date()} to {end_date.date()} \n"
-                 f"vs Approximate Mark-to-Market (MtM) Value of Bullish Sharkfin")
+                 f"vs Model Value vs. Par — Bullish Sharkfin")
     ax.legend(lines, labels, loc="upper left", fontsize=9)
     plt.tight_layout()
     plt.savefig(OUTPUT_PNG, dpi=150, bbox_inches="tight")
@@ -522,21 +339,31 @@ if __name__ == "__main__":
         "Barrier Level": f"{BARRIER * S0:,.2f}",
         "Barrier Touched": "Yes" if barrier_touched else "No",
         f"{underlying_name} Return": f"{S_T / S0 - 1:.2%}",
-        "Bullish Sharkfin Return": f"{sharkfin_return:.2%}",
+        "Bullish Sharkfin — Redemption Payoff (vs. Par)": f"{sharkfin_return:.2%}",
         "Realized Vol (ann.)": f"{vol:.2%}",
         "Max Drawdown": f"{max_drawdown(path):.2%}",
     })
 
     print("\n" + summary.to_string())
 
-    print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
-    raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
-    vol_term_structure = {
-        tenor: series.reindex(path.index).ffill().bfill()
-        for tenor, series in raw_term_structure.items()
-    }
-    vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
-    entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+    if TICKER.startswith("^"):
+        print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
+        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        vol_term_structure = {
+            tenor: series.reindex(path.index).ffill().bfill()
+            for tenor, series in raw_term_structure.items()
+        }
+        vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
+        entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+        vol_source_desc = f"interpolated from the {path.index[0].date()} VIX/VIX3M/VIX6M term structure"
+    else:
+        print(f"\n{TICKER} is a single name - no free historical implied-vol source exists for it, so")
+        print(f"using its own trailing 2y REALIZED volatility instead of the SPX VIX/VIX3M/VIX6M proxy")
+        print(f"(held flat for the note's life, same technique as the DCI/Multi-FCN/Multi-RC products):")
+        entry_vol = fetch_trailing_realized_vol(TICKER, ENTRY_DATE)
+        vol_term_structure = {TENOR: pd.Series(entry_vol, index=path.index)}
+        vol_source_desc = f"{TICKER}'s own trailing 2y realized vol (not VIX-derived)"
+        print(f"  {entry_vol:.2%}")
 
     print(f"\nVerifying the QuantLib CRR wiring (barrier pushed unreachable should collapse to the")
     print(f"plain vanilla call struck at the money):")
@@ -549,12 +376,12 @@ if __name__ == "__main__":
     greeks = finite_difference_greeks(S0, TENOR, entry_vol, q=dividend_yield)
     fair_value_pct_of_par = greeks["price"] / S0
 
-    print(f"\nBullish Sharkfin fair value at inception")
+    print(f"\nBullish Sharkfin — model value at inception")
     print(f"(ZCB discounted at SOFR {RISK_FREE_RATE:.2%} + Goldman Sachs CDS {GS_CDS_SPREAD:.2%}, long")
     print(f"up-and-out call priced at SOFR alone via QuantLib's CRR binomial lattice (barrier checked")
     print(f"once per trading day, rebate={REBATE}, dividend yield {dividend_yield:.2%}), T={TENOR}y,")
-    print(f"vol={entry_vol:.2%} interpolated from the {path.index[0].date()} VIX/VIX3M/VIX6M term")
-    print(f"structure, strike={STRIKE:.0%}, barrier={BARRIER:.0%} of S0={S0:,.2f}):")
+    print(f"vol={entry_vol:.2%} {vol_source_desc},")
+    print(f"strike={STRIKE:.0%}, barrier={BARRIER:.0%} of S0={S0:,.2f}):")
     print(f"  {fair_value_pct_of_par:.2%} of par ({fair_value_pct_of_par - 1:+.2%} vs. par)")
 
     print(f"\nBullish Sharkfin Greeks at inception (finite-difference):")
@@ -563,7 +390,7 @@ if __name__ == "__main__":
     print(f"  Rho:   {greeks['rho'] / S0 * 0.01:.4f}  (per 1% change in SOFR)")
     print(f"  Theta: {greeks['theta'] / S0:.4f} per year / {greeks['theta'] / S0 / 365:.5f} per day")
 
-    print(f"\nMTM Fair Value vs. Par at Inception:")
+    print(f"\nModel Value vs. Par at Inception:")
     print(f"  Price: {greeks['price']:,.2f}  vs. Par (S0): {S0:,.2f}  ({fair_value_pct_of_par:.2%} of par)")
 
     plot_path(path, S0, underlying_name, mtm_vol_term_structure=vol_term_structure, greeks=greeks, q=dividend_yield)

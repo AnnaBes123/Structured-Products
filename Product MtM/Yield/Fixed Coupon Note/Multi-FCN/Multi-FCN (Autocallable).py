@@ -7,6 +7,22 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    _quantlib_process,
+    zcb_price_and_greeks,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
@@ -14,83 +30,24 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 # Product MtM/Yield/Reverse Convertible/Multi-RC/, plus the autocall
 # feature from the single-name "Fixed Coupon Note (Autocallable).py",
 # one folder up) ---
-STRIKE = 0.8                  # worst-of put strike, as a fraction of each name's OWN entry level
+STRIKE = 0.90                  # worst-of put strike, as a fraction of each name's OWN entry level
 TRIGGER = 1.00                 # autocall level, as a fraction of each name's OWN entry level -
                                 # ALL names must be at/above this on an observation date for the
                                 # note to call (worst-of >= TRIGGER means every single name is)
 OBS_PER_YEAR = 4                # quarterly observation dates
 RISK_FREE_RATE = 0.04
-GS_CDS_SPREAD = 0.005308
+GS_CDS_SPREAD = 0.005308      # Goldman Sachs 5y CDS, 53.08 bps - issuer credit spread, ZCB leg only
 
-ENTRY_DATE = "2026-05-28"
+ENTRY_DATE = "2025-05-28"
 TENOR = 1
 
-TICKERS = ["SPY", "XLK"]           # same default basket as Multi-RC, for direct comparison
+TICKERS = ["AAPL", "JPM", "XOM"]           # same default basket as Multi-RC, for direct comparison
 CORRELATION_LOOKBACK_YEARS = 2
 
-N_MC_PATHS = 50000
+N_MC_PATHS = 100000
 MC_SEED = 42
 
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
-
-
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q. See
-    Multi-RC's README (Product MtM/Yield/Reverse Convertible/Multi-RC/)
-    for the full rationale and field-selection notes."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
 
 
 def fetch_multi_asset_path(tickers, start, end):
@@ -98,7 +55,15 @@ def fetch_multi_asset_path(tickers, start, end):
     dates (inner join) - see Multi-RC.py for the full rationale."""
     series = {ticker: fetch_daily_closes(ticker, start, end) for ticker in tickers}
     df = pd.concat(series, axis=1)
-    return df.dropna(how="any")
+    df = df.dropna(how="any")
+    if df.index[-1] < end - pd.Timedelta(days=10):
+        raise RuntimeError(
+            f"Requested window {start.date()} to {end.date()} extends past the last available "
+            f"trading day ({df.index[-1].date()}) - this script models a COMPLETED historical "
+            f"window, not a live in-progress note. Pick an ENTRY_DATE/TENOR combination that ends "
+            f"on or before today."
+        )
+    return df
 
 
 def estimate_vols_and_correlation(calibration_price_df):
@@ -109,35 +74,6 @@ def estimate_vols_and_correlation(calibration_price_df):
     vols = log_returns.std() * np.sqrt(252)
     corr = log_returns.corr()
     return vols.to_dict(), corr
-
-
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
-
-
-def max_drawdown(path):
-    running_max = path.cummax()
-    drawdown = path / running_max - 1
-    return drawdown.min()
-
-
-def zcb_price_and_greeks(principal, T_remaining, funding_rate):
-    discount = (1 + funding_rate) ** T_remaining
-    price = principal / discount
-    rho = -T_remaining * price / (1 + funding_rate)
-    theta = price * np.log(1 + funding_rate)
-    return {"price": price, "rho": rho, "theta": theta}
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
 
 
 def black_scholes_put(S, K, T, r, sigma, q=0.0):
@@ -151,7 +87,7 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -160,17 +96,9 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
 
 
 def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths=N_MC_PATHS, seed=MC_SEED):
-    """
-    TERMINAL-ONLY worst-of put via QuantLib's own basket-option machinery
-    (StochasticProcessArray + MinBasketPayoff + MCEuropeanBasketEngine) -
-    identical to Multi-RC's own pricer (Product MtM/Yield/Reverse
-    Convertible/Multi-RC/Multi-RC.py). Used here ONLY as the benchmark for
-    verify_against_closed_form's "autocall trigger unreachable" reduction
-    check, never as the live pricer for the autocallable note itself (the
-    autocall feature needs a genuine multi-DATE simulation - see
-    simulate_forward_price below - which QuantLib has no basket engine
-    for).
-    """
+    """Terminal-only worst-of put via QuantLib's basket-option machinery,
+    same as Multi-RC's own pricer. Used only as a verification benchmark
+    below, not as the live autocall pricer - see MATHEMATICS.md."""
     n = len(relative_spots)
     today = ql.Date(1, 1, 2000)
     ql.Settings.instance().evaluationDate = today
@@ -186,7 +114,7 @@ def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     basket_payoff = ql.MinBasketPayoff(payoff)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     option = ql.BasketOption(basket_payoff, exercise)
 
@@ -196,45 +124,11 @@ def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths
     return option.NPV()
 
 
-# ---------------------------------------------------------------------------
-# REPLICATION: Multi-FCN (Autocallable) = Worst-of Reverse Convertible
-#            (Multi-RC) + a worst-of autocall feature
-#            = Long Zero-Coupon Bond (Principal)
-#            - Short Put on min_i(S_i/S0_i) (struck at STRIKE, qty 1/STRIKE)
-#            - a short digital-like autocall feature at each quarterly
-#              observation date: if EVERY name in the basket closes at or
-#              above TRIGGER on that date (equivalently, worst_of >=
-#              TRIGGER), the note redeems immediately at Principal and the
-#              worst-of put is knocked out (no further downside exposure).
-#
-# Dispersion cuts BOTH ways for a worst-of note, and this file is the other
-# half of the story Multi-RC already told:
-#   - Multi-RC showed dispersion makes the DOWNSIDE worse (more independent
-#     chances for one name to breach the strike).
-#   - Here, dispersion makes the UPSIDE (the autocall) harder to reach too:
-#     ALL three names have to be simultaneously at/above TRIGGER for the
-#     note to call, not just one - so a worst-of autocallable calls less
-#     often than any single-name autocallable at the same trigger. Both
-#     effects have the same root cause and the same sign for the investor
-#     (worse), which is exactly what the printed comparisons in this
-#     script are built to show as computed numbers, not asserted ones.
-#
-# NO CLOSED FORM AND NO QUANTLIB BASKET ENGINE FOR THIS: the single-name
-# Autocallable FCN's closed-form digital-strip sanity check relies on a
-# joint multivariate normal over TIME for one asset; doing this over both
-# TIME and ASSETS at once pushes the required dimensionality
-# (N_assets x N_obs_dates) into territory scipy's multivariate normal CDF
-# handles poorly, and QuantLib has no basket-autocallable engine either.
-# So the live pricer here is a genuinely hand-rolled correlated multi-step
-# Monte Carlo (simulate_forward_price below) - the natural generalization
-# of the single-name Autocallable FCN's own hand-rolled MC engine (which
-# ALSO isn't a QuantLib engine, for the same "no suitable built-in engine
-# exists" reason) with an added asset dimension, correlated via a Cholesky
-# decomposition of the correlation matrix applied to each time step's
-# innovations. QuantLib IS still used for the verification benchmark
-# below (worst_of_put_price, and black_scholes_put for the deepest
-# reduction).
-# ---------------------------------------------------------------------------
+# REPLICATION: Multi-RC's worst-of ZCB-minus-put + a worst-of autocall
+# feature. No closed form and no QuantLib basket-autocall engine exist for
+# this, so the live pricer is a hand-rolled correlated multi-step Monte
+# Carlo. See README.md for the dispersion discussion and MATHEMATICS.md for
+# the full derivation.
 
 def get_observation_dates(entry_date, tenor=TENOR, obs_per_year=OBS_PER_YEAR):
     """Quarterly (or otherwise) calendar dates from entry to maturity. The
@@ -260,14 +154,8 @@ def map_to_trading_days(calendar_dates, path_index):
 
 
 def determine_actual_call_date(S0_list, price_df, observation_dates, trigger=TRIGGER):
-    """
-    Walks the REAL historical basket path chronologically over the early
-    observation dates (all but the last, which is ordinary maturity).
-    Returns the first date the WORST-OF relative performance across the
-    basket closes at or above the trigger - i.e. the first date every
-    single name is simultaneously at or above it - or None if it never
-    happens.
-    """
+    """First historical date the WORST-OF relative performance closes
+    at/above the trigger (every name simultaneously), or None."""
     relative = price_df / pd.Series(S0_list, index=price_df.columns)
     worst_of = relative.min(axis=1)
     for obs_date in observation_dates[:-1]:
@@ -279,24 +167,9 @@ def determine_actual_call_date(S0_list, price_df, observation_dates, trigger=TRI
 def simulate_forward_price(relative_spots_today, valuation_date, maturity_date, future_call_obs_dates,
                             sigmas, qs, corr_matrix, r=RISK_FREE_RATE, credit_spread=GS_CDS_SPREAD,
                             strike=STRIKE, trigger=TRIGGER, n_paths=N_MC_PATHS, seed=MC_SEED):
-    """
-    Monte Carlo forward valuation from valuation_date to maturity_date,
-    jointly simulating every name in the basket at once (correlated via a
-    Cholesky decomposition of corr_matrix applied to each time step's
-    innovations), with a worst-of-across-names check at every future
-    autocall observation date. Direct multi-asset generalization of the
-    single-name Autocallable FCN's own simulate_forward_price - same
-    grid/dt/drift/discounting structure, with an added asset axis and a
-    "which name is worst" reduction (np.min over assets) applied before
-    the first-passage-over-time logic that was already there.
-
-    `relative_spots_today[i]` is name i's CURRENT performance relative to
-    its OWN entry level (1.0 at inception; S_i(t)/S0_i at a later MTM
-    date) - same convention as Multi-RC.
-
-    Principal = 1.0 ("par" units), same convention as Multi-RC - there's
-    no single dollar S0 to anchor multiple names to.
-    """
+    """Correlated multi-asset, multi-date Monte Carlo forward valuation
+    (Cholesky-correlated GBM, worst-of-across-names at each observation
+    date). See MATHEMATICS.md section 2 for the full construction."""
     n_assets = len(relative_spots_today)
     T_remaining = (maturity_date - valuation_date).days / 365.25
     if T_remaining <= 0:
@@ -338,7 +211,7 @@ def simulate_forward_price(relative_spots_today, valuation_date, maturity_date, 
     call_time = grid_years[first_call_idx]
     settle_time = np.where(any_triggered, call_time, grid_years[-1])
 
-    principal_pv = 1.0 * (1 + r + credit_spread) ** (-settle_time)
+    principal_pv = 1.0 * np.exp(-(r + credit_spread) * settle_time)
 
     put_quantity = 1.0 / strike
     put_payoff = np.where(any_triggered, 0.0, -put_quantity * np.maximum(strike - worst_of_T, 0.0))
@@ -349,34 +222,17 @@ def simulate_forward_price(relative_spots_today, valuation_date, maturity_date, 
 
 
 def verify_against_closed_form(sigmas, qs, corr_matrix, T, r=RISK_FREE_RATE, n_paths=N_MC_PATHS):
-    """
-    Two independent, nested reduction checks that the hand-rolled
-    correlated multi-step engine is correct, before trusting it for the
-    actual (3-name, autocall-enabled) note:
-
-    1. N=1, autocall trigger unreachable: simulate_forward_price on a
-       single synthetic name should collapse to that name's plain
-       closed-form FCN price (ZCB - put_quantity*vanilla put via
-       QuantLib's AnalyticEuropeanEngine) - the worst-of-across-assets
-       reduction is trivial with one asset, and no future observation
-       dates are passed in, so the autocall feature never triggers.
-    2. N=3 (the real basket), autocall trigger unreachable: with no
-       future_call_obs_dates passed in either, simulate_forward_price's
-       payoff reduces to Multi-RC's own worst-of-put note - should match
-       ZCB - put_quantity*worst_of_put_price (the same QuantLib
-       MCEuropeanBasketEngine pricer Multi-RC itself uses) to within
-       Monte Carlo noise. This is the check that specifically validates
-       the worst-of-across-assets machinery inside the new time-stepped
-       engine, not just the autocall/time machinery alone.
-    """
+    """Two nested reduction checks (N=1 and N=3, trigger unreachable)
+    against independent closed-form/QuantLib benchmarks - see
+    MATHEMATICS.md section 3."""
     maturity_date = pd.Timestamp(ENTRY_DATE) + pd.Timedelta(days=round(T * 365.25))
 
     single_relative = [1.0]
     mc_single = simulate_forward_price(single_relative, pd.Timestamp(ENTRY_DATE), maturity_date,
                                         future_call_obs_dates=[], sigmas=sigmas[:1], qs=qs[:1],
-                                        corr_matrix=np.array([[1.0]]), trigger=10.0, n_paths=n_paths)["price"]
-    zcb_single = zcb_price_and_greeks(1.0, T, RISK_FREE_RATE + GS_CDS_SPREAD)
-    vanilla_single = black_scholes_put(1.0, STRIKE, T, RISK_FREE_RATE, sigmas[0], qs[0])["price"]
+                                        corr_matrix=np.array([[1.0]]), r=r, trigger=10.0, n_paths=n_paths)["price"]
+    zcb_single = zcb_price_and_greeks(1.0, T, r + GS_CDS_SPREAD)
+    vanilla_single = black_scholes_put(1.0, STRIKE, T, r, sigmas[0], qs[0])["price"]
     closed_form_single = zcb_single["price"] - (1.0 / STRIKE) * vanilla_single
     n1_rel_diff = abs(mc_single - closed_form_single) / closed_form_single
 
@@ -384,9 +240,9 @@ def verify_against_closed_form(sigmas, qs, corr_matrix, T, r=RISK_FREE_RATE, n_p
     all_relative = [1.0] * n
     mc_multi = simulate_forward_price(all_relative, pd.Timestamp(ENTRY_DATE), maturity_date,
                                        future_call_obs_dates=[], sigmas=sigmas, qs=qs,
-                                       corr_matrix=corr_matrix, trigger=10.0, n_paths=n_paths)["price"]
-    zcb_multi = zcb_price_and_greeks(1.0, T, RISK_FREE_RATE + GS_CDS_SPREAD)
-    worst_of_put = worst_of_put_price(all_relative, STRIKE, T, RISK_FREE_RATE, sigmas, qs, corr_matrix,
+                                       corr_matrix=corr_matrix, r=r, trigger=10.0, n_paths=n_paths)["price"]
+    zcb_multi = zcb_price_and_greeks(1.0, T, r + GS_CDS_SPREAD)
+    worst_of_put = worst_of_put_price(all_relative, STRIKE, T, r, sigmas, qs, corr_matrix,
                                        n_paths=200_000, seed=MC_SEED)
     closed_form_multi = zcb_multi["price"] - (1.0 / STRIKE) * worst_of_put
     n3_rel_diff = abs(mc_multi - closed_form_multi) / closed_form_multi
@@ -398,14 +254,8 @@ def verify_against_closed_form(sigmas, qs, corr_matrix, T, r=RISK_FREE_RATE, n_p
 
 
 def autocallable_running_return(S0_list, price_df, actual_call_date):
-    """
-    Participation Tracker: the terminal payoff FORMULA applied to each
-    day's worst-of relative performance, ignoring the autocall optionality
-    itself (same formula as Multi-RC): full principal at/above strike,
-    else Principal*(worst_of/Strike). Once the note has ACTUALLY
-    autocalled in the real historical path, it no longer exists - flat at
-    par (0% return) from that date on.
-    """
+    """Redemption Payoff (Relative to Par), worst-of - see README
+    "Reading the charts"."""
     relative = price_df / pd.Series(S0_list, index=price_df.columns)
     worst_of = relative.min(axis=1)
     running = pd.Series(0.0, index=price_df.index)
@@ -421,13 +271,19 @@ def autocallable_running_return(S0_list, price_df, actual_call_date):
 def autocallable_mtm_price_series(S0_list, price_df, sigmas, qs, corr_matrix, observation_dates,
                                    actual_call_date, r=RISK_FREE_RATE, credit_spread=GS_CDS_SPREAD,
                                    n_paths=N_MC_PATHS):
+    """Model value of the LIVE note only - series ends at actual_call_date
+    (NaN after) so the plotted line stops at settlement. See README
+    "Reading the charts" and autocall_settlement_proceeds_series below."""
     maturity_date = price_df.index[-1]
     relative_path = price_df / pd.Series(S0_list, index=price_df.columns)
 
     prices = []
     for date, row in relative_path.iterrows():
-        if actual_call_date is not None and date >= actual_call_date:
-            prices.append(1.0)  # note has settled at par - nothing left to mark
+        if actual_call_date is not None and date > actual_call_date:
+            prices.append(np.nan)  # note has settled - nothing left to mark, line ends
+            continue
+        if actual_call_date is not None and date == actual_call_date:
+            prices.append(1.0)  # settlement value itself (par, as modeled here - excludes coupons)
             continue
 
         future_obs = [d for d in observation_dates[:-1] if d > date]
@@ -437,17 +293,21 @@ def autocallable_mtm_price_series(S0_list, price_df, sigmas, qs, corr_matrix, ob
     return pd.Series(prices, index=price_df.index)
 
 
+def autocall_settlement_proceeds_series(price_df, actual_call_date):
+    """Cash proceeds after an actual autocall, held flat (par=1.0, no
+    reinvestment, excl. coupons) - see README "Reading the charts"."""
+    proceeds = pd.Series(np.nan, index=price_df.index)
+    if actual_call_date is not None:
+        proceeds[price_df.index >= actual_call_date] = 1.0
+    return proceeds
+
+
 def finite_difference_greeks(relative_spots, valuation_date, maturity_date, future_call_obs_dates,
                               sigmas, qs, corr_matrix, r=RISK_FREE_RATE, credit_spread=GS_CDS_SPREAD,
                               n_paths=N_MC_PATHS, seed=MC_SEED):
-    """
-    Bump-and-reprice Greeks, one Delta and one Vega PER NAME (same
-    reasoning as Multi-RC - a multi-asset product's risk is a vector),
-    plus a single Rho and Theta. Common random numbers (same MC_SEED
-    reused for every bumped evaluation) keep the finite differences from
-    being swamped by independent Monte Carlo noise, same approach as the
-    single-name Autocallable FCN's own Greeks.
-    """
+    """Bump-and-reprice Greeks - one Delta/Vega per name (risk is a
+    vector), common random numbers (MC_SEED) so finite differences
+    aren't swamped by independent MC noise."""
     n = len(relative_spots)
     bump_S, bump_sigma, bump_r = 0.01, 0.005, 0.0001
 
@@ -496,7 +356,7 @@ def plot_path(price_df, S0_list, tickers, underlying_names, observation_dates, a
                 linewidth=1.1, alpha=0.85, label=underlying_names[i])
 
     ax.plot(tracker_pct.index, tracker_pct.values, color="indianred", linewidth=1.8,
-            linestyle="dashed", label="Multi-FCN (Autocallable) Participation Tracker (worst-of)")
+            linestyle="dashed", label="Multi-FCN (Autocallable) Redemption Payoff (Relative to Par) (worst-of)")
 
     ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
     ax.axhline(0, color="lightgrey", linewidth=0.8)
@@ -546,9 +406,19 @@ def plot_path(price_df, S0_list, tickers, underlying_names, observation_dates, a
     ax2 = ax.twinx()
     mtm_line, = ax2.plot(
         mtm_gain_over_par_pct.index, mtm_gain_over_par_pct.values, color="darkred", linewidth=1.8,
-        linestyle="solid", label="Multi-FCN (Autocallable) - Approximate MtM (% of Par, Monte Carlo)")
-    ax2.set_ylabel("MtM Fair Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
+        linestyle="solid", label="Multi-FCN (Autocallable) — Model Value of Redemption Component (% of Par, excl. coupons, Monte Carlo)")
+    ax2.set_ylabel("Redemption Component Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
     ax2.tick_params(axis="y", labelcolor="darkred")
+
+    if actual_call_date is not None:
+        proceeds = autocall_settlement_proceeds_series(price_df, actual_call_date)
+        proceeds_gain_over_par_pct = (proceeds - 1.0) * 100
+        proceeds_line, = ax2.plot(
+            proceeds_gain_over_par_pct.index, proceeds_gain_over_par_pct.values, color="gray",
+            linewidth=1.5, linestyle="dotted",
+            label="Cash Proceeds After Autocall (par received, held flat, no reinvestment, excl. coupons)")
+        lines.append(proceeds_line)
+        labels.append(proceeds_line.get_label())
 
     combined_min = min(combined_min, mtm_gain_over_par_pct.min())
     combined_max = max(combined_max, mtm_gain_over_par_pct.max())
@@ -562,7 +432,7 @@ def plot_path(price_df, S0_list, tickers, underlying_names, observation_dates, a
     basket_label = " / ".join(underlying_names)
     end_date = index_return_pct.index[-1]
     ax.set_title(f"Worst-of Basket ({basket_label}) Price Return Path from {price_df.index[0].date()} to {end_date.date()} \n"
-                 f"vs Approximate Mark-to-Market (MtM) Value of Multi-FCN (Autocallable)")
+                 f"vs Model Value of Redemption Component (Excludes Coupons) — Multi-FCN (Autocallable)")
     ax.legend(lines, labels, loc="upper left", fontsize=9)
     plt.tight_layout()
     plt.savefig(OUTPUT_PNG, dpi=150, bbox_inches="tight")
@@ -614,8 +484,9 @@ if __name__ == "__main__":
 
     if actual_call_date is not None:
         print(f"\n>>> Note ACTUALLY AUTOCALLED on {actual_call_date.date()} in this historical path (every")
-        print(f"name closed at or above the {TRIGGER:.0%} trigger). Principal returned; no further downside")
-        print(f"exposure after this date. <<<")
+        print(f"name closed at or above the {TRIGGER:.0%} trigger). Principal (as modeled here) is returned")
+        print(f"early; no further downside exposure after this date. A real note would also pay accrued")
+        print(f"coupons to that date - this script does not price or include coupons. <<<")
     else:
         print(f"\n>>> Note never autocalled in this historical path; ran to full maturity like Multi-RC. <<<")
 
@@ -639,7 +510,7 @@ if __name__ == "__main__":
     }
     for t, n, s0, st in zip(TICKERS, underlying_names, S0_list, S_T_list):
         summary_rows[f"{n} ({t}) Return"] = f"{st / s0 - 1:+.2%}"
-    summary_rows["Multi-FCN (Autocallable) Return"] = f"{note_return:.2%}"
+    summary_rows["Multi-FCN (Autocallable) — Redemption Payoff (vs. Par, excl. coupons)"] = f"{note_return:.2%}"
 
     print("\n" + pd.Series(summary_rows).to_string())
 
@@ -651,7 +522,7 @@ if __name__ == "__main__":
     mc_entry = simulate_forward_price([1.0] * len(TICKERS), entry_ts, maturity_ts, future_obs_at_entry,
                                        sigmas, dividend_yields, corr_matrix)
 
-    print(f"\nMulti-FCN (Autocallable) fair value at inception")
+    print(f"\nMulti-FCN (Autocallable) — model value of redemption component at inception (excludes coupons)")
     print(f"(Monte Carlo, {N_MC_PATHS:,} paths, quarterly worst-of autocall obs at {TRIGGER:.0%} trigger,")
     print(f"ZCB discounted at SOFR {RISK_FREE_RATE:.2%} + GS CDS {GS_CDS_SPREAD:.2%}, worst-of put at SOFR")
     print(f"alone, T={TENOR}y, strike={STRIKE:.0%}):")

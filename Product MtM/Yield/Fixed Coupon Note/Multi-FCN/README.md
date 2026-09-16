@@ -12,6 +12,13 @@ as `Multi-RC` (`TICKERS = ["AAPL", "JPM", "XOM"]`) for direct comparability betw
 This is a **deterministic historical approximation** — real historical prices, no simulation for the path itself
 (the *pricing* does use Monte Carlo — see "Pricing" below).
 
+> **Scope: model value of the redemption component — excludes coupons.** Everything this script
+> computes and charts as "Model Value" is the value of the principal repayment plus the embedded
+> worst-of downside/autocall feature - the part of the structure that's actually modeled here. It
+> does **not** include the value of the periodic coupon cash flows a real note like this also
+> pays; coupon valuation is out of scope for this project (see `Product MtM/README.md`). Don't
+> read the printed/charted value as total investor return or as a full note fair value.
+
 ## Dispersion cuts both ways for a worst-of note
 
 `Multi-RC`'s README makes the case that dispersion (low correlation across the basket) makes the
@@ -148,12 +155,13 @@ Running `Multi-FCN (Autocallable).py` prints the resolved basket, the trailing-w
 correlation matrix, each name's dividend yield, the quarterly autocall schedule with the worst-of
 relative performance at each observation date, whether (and when) the note actually autocalled in
 this historical path, both reduction-check verifications, a per-name return summary, the note's
-fair value at inception with per-name Delta/Vega and shared Rho/Theta, the empirical
-probability-of-call from the Monte Carlo, and — as a direct sanity check — what the same basket
-would be worth with no autocall feature at all (`Multi-RC`, in effect), confirming the
-autocallable price is always higher. It then saves a chart with each basket member's own return
-path, the worst-of Participation Tracker, quarterly observation-date markers, the actual autocall
-date (if any), and the note's Monte Carlo fair value on its own right-hand axis.
+model value of the redemption component at inception (excluding coupons) with per-name Delta/Vega
+and shared Rho/Theta, the empirical probability-of-call from the Monte Carlo, and — as a direct
+sanity check — what the same basket would be worth with no autocall feature at all (`Multi-RC`, in
+effect), confirming the autocallable price is always higher. It then saves a chart with each
+basket member's own return path, the worst-of Redemption Payoff (Relative to Par), quarterly
+observation-date markers, the actual autocall date (if any), and the model value on its own
+right-hand axis.
 
 Running `Greek Sensitivity (Autocallable).py` prints and charts the Greeks ladder: strike,
 trigger, funding curve, and each name's (trailing-window) vol/correlation/dividend yield held
@@ -166,17 +174,22 @@ ladder.
 ### `Multi-FCN (Autocallable).png` (the historical approximation chart)
 
 - **Thin colored lines** — each basket member's own return from entry (%).
-- **Dashed indianred line** — the "Participation Tracker": the terminal payoff formula applied to
+- **Dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula applied to
   each day's worst-of relative performance, flat at 0% once the note has actually autocalled in
-  this historical path (see the darkgreen "Autocalled" marker). This is **not** what you'd
-  actually receive if the note were sold or unwound today - see the MTM line for the actual
-  fair-value estimate.
+  this historical path (see the darkgreen "Autocalled" marker). This is an illustration of the
+  payoff formula, **not** what you'd actually receive if the note were sold or unwound today - see
+  the model-value line for the estimate that accounts for remaining time value.
 - **Mediumseagreen dotted vertical lines** — every quarterly observation date, whether or not it
   triggered the autocall; a darkgreen dashed line marks the one that actually did (if any).
 - **Dotted blue lines** — the strike and the (higher) autocall trigger, both in relative-
   performance terms applied identically to every name.
-- **Right axis, solid darkred line** — the note's Monte Carlo fair value (% of par); jumps flat to
-  0% (par) exactly at the actual autocall date, since there's nothing left to mark after that.
+- **Right axis, solid darkred line** — the model value of the redemption component (% of par,
+  excludes coupons, Monte Carlo). **This line ends at the actual autocall date** if the note
+  called in this historical path - once settled, there is no live note left to mark.
+- **Right axis, gray dotted line ("Cash Proceeds After Autocall")** — appears only if the note
+  actually autocalled: the par amount received at settlement, held flat with no reinvestment
+  assumed, through the end of the charted window. This is cash-in-hand accounting, not a
+  continuing mark-to-market of the (now-settled) note, and it also excludes coupons.
 
 ### `Greek Sensitivity (Autocallable).png` (the Greeks ladder)
 
@@ -209,3 +222,17 @@ python3 "Greek Sensitivity (Autocallable).py"
 
 Data comes from `yfinance` (Yahoo Finance) for every name in the basket - no FRED fallback for
 individual equities, same as `Multi-RC`.
+
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, numerical limitations) and the project's AI-assisted learning-project
+disclosure. This product in particular excludes coupon valuation entirely - see the scope note at
+the top of this file.
+
+## The maths
+
+`MATHEMATICS.md` in this folder has the full worked-out correlated multi-asset Monte Carlo
+construction and the two nested closed-form verification checks, building on the single-name
+Autocallable FCN's own `../MATHEMATICS.md` and Multi-RC's `../../Reverse
+Convertible/Multi-RC/MATHEMATICS.md`.

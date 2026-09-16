@@ -13,6 +13,14 @@ Same replication and terms as the `Fixed Coupon Note` product in the sibling fol
 convertible and a fixed coupon note are the same underlying structure in practice, priced here
 under identical assumptions. This version has no autocall feature.
 
+> **Scope: model value of the redemption component — excludes coupons.** Everything this script
+> computes and charts as "Model Value" is the value of the principal repayment plus the embedded
+> downside feature (the short put / physical-delivery risk) - the part of the structure that's
+> actually modeled here. It does **not** include the value of the periodic coupon cash flows a
+> real Reverse Convertible also pays; coupon valuation is out of scope for this project (see
+> `Product MtM/README.md`). Don't read the printed/charted value as total investor return or as a
+> full note fair value.
+
 ## Replication
 
 ```
@@ -98,34 +106,39 @@ All four are closed-form (verified against finite differences before shipping):
 
 ## Volatility
 
-Same approach as the other products in this repo: SPX implied vol interpolated from the
-VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity (not a
-flat number, and not the raw 30-day VIX applied to a much longer holding period). See the
-`Product MtM/Participation/Outperformance/` folder's README for the full rationale and the known limitation beyond 182
+Same approach as the other products in this repo: for an index, SPX implied vol interpolated
+from the VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity
+(not a flat number, and not the raw 30-day VIX applied to a much longer holding period); for a
+single-name stock, that ticker's own trailing 2-year realized volatility (held flat, since no
+free historical implied-vol source exists for an arbitrary stock the way VIX serves the index).
+See the `Product MtM/Participation/Outperformance/` folder's README for the full rationale on
+both, and the known limitation beyond 182
 days (VIX6M held flat, since there's no free historical source for a longer-dated implied vol).
 
 ## Output
 
 Running the script prints the resolved underlying name and dividend yield, entry/maturity
-levels, realized returns, the note's fair value at inception (as % of par - note this is
-typically **below** par, since the ZCB alone doesn't earn back its own discount without the put
-premium topping it up), and its Greeks - then saves a chart with the underlying's price and note
-payoff on the left axis and the note's fair value on its own right-hand axis, with a dotted line
-marking the strike. Every label (legend, axis, chart title) uses the resolved underlying name,
-not a hardcoded "S&P 500".
+levels, realized returns, the note's model value of the redemption component at inception (as %
+of par, excluding coupons - note this is typically **below** par, since the ZCB alone doesn't earn
+back its own discount without the put premium topping it up, and there is no coupon leg here to
+top it up further), and its Greeks - then saves a chart with the underlying's price and note
+payoff on the left axis and the model value on its own right-hand axis, with a dotted line marking
+the strike. Every label (legend, axis, chart title) uses the resolved underlying name, not a
+hardcoded "S&P 500".
 
 ## Reading the charts
 
 ### `Reverse Convertible.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to today's level (ignoring time value): flat at 0% above the strike, then falling 1:1
   with the index below it. This is **not** what you'd actually receive if the note were sold or
   unwound today - it ignores all remaining time value in the still-live put. The dotted blue line
   marks the strike.
-- **Right axis, solid darkred line** — the note's actual Black-Scholes fair value (% of par)
-  each day, including time value. It converges onto the tracker line exactly at maturity.
+- **Right axis, solid darkred line** — the model value of the redemption component (% of par,
+  excludes coupons, Black-Scholes) each day, including time value. It converges onto the tracker
+  line exactly at maturity.
 - The Greeks box (top right) is the day-1 (inception) snapshot only — for how Greeks change with
   spot, see the ladder chart below.
 
@@ -136,7 +149,7 @@ funding curve (SOFR + CDS spread) and vol are all pinned at their day-1 values t
 spot moves. Theta is excluded here on purpose: since tenor never varies across the ladder, a
 "time passing" Greek has nothing meaningful to show against a fixed T.
 
-- **Price (% of Par)**: the note's fair value at that spot level.
+- **Price (% of Par)**: the model value of the redemption component at that spot level.
 - **Delta**: points of note value gained/lost per 1-point move in the index, right now, at that
   spot. Always between 0 and ~1 here, since being short a put gives long-like (positive) delta
   that grows as spot falls toward the strike.
@@ -147,7 +160,7 @@ spot moves. Theta is excluded here on purpose: since tenor never varies across t
   the most optionality, and fading toward zero far from it.
 - **Rho (per 1% change in SOFR)**: percentage points of par the note's value moves for a
   1-percentage-point move in the risk-free rate. Worked example: a reading of **≈ -0.0069 at
-  spot=100%** means "if SOFR rose from 4% to 5% right now, index unchanged, the note's fair value
+  spot=100%** means "if SOFR rose from 4% to 5% right now, index unchanged, the note's model value
   would fall by about 0.69 percentage points of par" - roughly $6.90 on a $1,000-par note. It's
   small and negative because the ZCB leg's bond-duration effect (higher rates → lower present
   value of the principal) outweighs the smaller, opposite-signed rho contributed by the short
@@ -169,3 +182,16 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX
 series if Yahoo is unavailable.
+
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, numerical limitations) and the project's AI-assisted learning-project
+disclosure. This product in particular excludes coupon valuation entirely - see the scope note at
+the top of this file.
+
+## The maths
+
+This note's replication and pricing math is identical to the Fixed Coupon Note's (sibling
+folder) - see `../Fixed Coupon Note/MATHEMATICS.md` for every formula worked out, including the
+conversion-ratio derivation.

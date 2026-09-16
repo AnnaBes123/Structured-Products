@@ -8,6 +8,12 @@ but any single-name stock or index ticker works - see "Underlying selection" bel
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 Distinct from the `Bonus-Outperfomance` certificate in the sibling folder: that product adds
 *leveraged* (>1x) participation above its strike on top of the same bonus/barrier mechanic. This
 one has plain 1:1 participation throughout, unlimited on the upside — the classic, uncapped Bonus
@@ -134,17 +140,19 @@ underlying, or change the window.
 
 ## Volatility
 
-Same approach as the other products in this repo: SPX implied vol interpolated from the
-VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity. See the
-`Outperformance` folder's README for the full rationale.
+Same approach as the other products in this repo: for an index, SPX implied vol interpolated
+from the VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity;
+for a single-name stock, that ticker's own trailing 2-year realized volatility (held flat, since
+no free historical implied-vol source exists for an arbitrary stock the way VIX serves the
+index). See the `Outperformance` folder's README for the full rationale on both.
 
 ## Output
 
 Running `Bonus Certificate.py` prints the resolved underlying name and dividend yield,
 entry/maturity levels, realized returns, whether the barrier was actually touched in this
-historical path, the closed-form verification check, the certificate's fair value at inception
+historical path, the closed-form verification check, the certificate's model value at inception
 (as % of par), and its Greeks — then saves a chart with the underlying's price and certificate
-payoff on the left axis and the certificate's fair value on its own right-hand axis, with dotted
+payoff on the left axis and the certificate's model value on its own right-hand axis, with dotted
 lines marking the strike (grey), bonus level (blue), and barrier (green), and — if the barrier was
 touched in this path — a vertical dashed green line at the knock-out date.
 
@@ -162,7 +170,7 @@ vol and the risk-free rate held fixed, only spot varies, shown for both barrier 
 - **Left axis, dotted lines** — blue marks the bonus level, green marks the barrier; a dashed
   green vertical line (with a "Barrier Knocked Out" label) marks the date the barrier was actually
   touched, if it was, in this historical path.
-- **Right axis, solid darkred line** — the certificate's fair value (% of par), converging onto
+- **Right axis, solid darkred line** — the certificate's model value (% of par), converging onto
   the dashed payoff line exactly at maturity.
 
 ### `Greek Sensitivity.png` (the Greeks ladder)
@@ -173,7 +181,7 @@ Breached", dashed for "Breached" — since the barrier changes every Greek's val
 below the barrier itself only "Breached" is shown, since you cannot be below the barrier without
 having touched it.
 
-- **Price (% of Par)**: fair value at that spot level. Visibly flattens toward the bonus level at
+- **Price (% of Par)**: model value at that spot level. Visibly flattens toward the bonus level at
   low spot when not breached; keeps rising 1:1 at high spot, uncapped.
 - **Delta**: points of certificate value per 1-point index move, right now, at that spot. Stays
   near 1 at high spot (the LEPO's own delta, uncapped) and rises above 1 near the bonus level
@@ -194,3 +202,8 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

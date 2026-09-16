@@ -16,6 +16,13 @@ This is a **deterministic historical approximation** — real historical prices,
 (the *pricing*, unlike the path, does use Monte Carlo — see "Pricing" below, same distinction the
 `Fixed Coupon Note (Autocallable)` product already draws).
 
+> **Scope: model value of the redemption component — excludes coupons.** Everything this script
+> computes and charts as "Model Value" is the value of the principal repayment plus the embedded
+> worst-of downside feature - the part of the structure that's actually modeled here. It does
+> **not** include the value of the periodic coupon cash flows a real Reverse Convertible also
+> pays; coupon valuation is out of scope for this project (see `Product MtM/README.md`). Don't
+> read the printed/charted value as total investor return or as a full note fair value.
+
 ## Why worst-of needs correlation, and why that's unavoidable
 
 A single-name RC's payoff depends only on that one name's own path. A worst-of note's payoff
@@ -25,7 +32,7 @@ names move together versus independently. Low correlation (dispersion) makes a w
 largely-independent names, there are three separate chances for *one of them* to breach the
 strike, not just one. This is a real, unavoidable feature of the payoff, not a modeling choice —
 correlation has to enter the pricing somehow. See the "sanity check" printed by `Multi-RC.py`:
-the worst-of note's fair value is directly compared against what each name would be worth as a
+the worst-of note's model value is directly compared against what each name would be worth as a
 plain single-name RC in isolation, and the worst-of figure is always lower, by construction.
 
 ## Replication
@@ -103,12 +110,13 @@ real historical daily closes — `estimate_vols_and_correlation` computes them d
 returns, the same real-data standard as every other number in this repo. Two things distinguish
 this from the single-name products' approach:
 
-- **No implied vol term structure is used here.** The single-name RC interpolates SPX implied
-  vol from the VIX/VIX3M/VIX6M term structure as a (documented, imperfect) proxy even for
-  single-name tickers like `MCD` — there's no free per-name options data source wired up anywhere
-  in this repo. That simplification doesn't generalize cleanly to three unrelated names at once
-  (VIX has no meaningful relationship to JPM's or XOM's own vol), so this file uses each name's
-  own **realized** vol instead — a real, sourced number, just a different real source.
+- **No implied vol term structure is used here, same as the single-name RC for a single-name
+  ticker.** There's no free per-name options data source wired up anywhere in this repo, so
+  neither file uses implied vol for a stock (only for an index, via VIX/VIX3M/VIX6M - see the
+  single-name RC's README). The one difference is the lookback convention: the single-name RC
+  computes one flat realized vol from a fixed 2-year trailing window; this file's
+  `CORRELATION_LOOKBACK_YEARS` does the same per name, plus the full correlation matrix in one
+  pass, since a worst-of basket needs the co-movement between names, not just each one's own vol.
 - **`CORRELATION_LOOKBACK_YEARS = 2` is a TRAILING window ending at `ENTRY_DATE`** — vol and
   correlation are estimated from data available *before* the note starts, not from the historical
   window itself. Estimating correlation from the same window you're pricing against the outcome
@@ -161,11 +169,12 @@ the window.
 Running `Multi-RC.py` prints the resolved basket names, the trailing-window realized vol and
 correlation matrix, each name's dividend yield, the two QuantLib basket-engine verification
 checks, a per-name return summary and which name actually finished worst in this historical path,
-the note's fair value at inception (as % of par) with per-name Delta/Vega plus a shared Rho/Theta,
-and — as a direct sanity check — what each name would be worth as a **plain single-name RC** at
-the same strike, confirming the worst-of figure is always lower. It then saves a chart with each
-basket member's own return path (thin lines), the worst-of Participation Tracker (dashed), and
-the note's Monte Carlo fair value on its own right-hand axis.
+the note's model value of the redemption component at inception (as % of par, excluding coupons)
+with per-name Delta/Vega plus a shared Rho/Theta, and — as a direct sanity check — what each name
+would be worth as a **plain single-name RC** at the same strike, confirming the worst-of figure is
+always lower. It then saves a chart with each basket member's own return path (thin lines), the
+worst-of Redemption Payoff (Relative to Par) (dashed), and the model value on its own right-hand
+axis.
 
 Running `Greek Sensitivity.py` prints and charts the Greeks ladder: strike, funding curve, and
 each name's (trailing-window-estimated) vol/correlation/dividend yield held fixed, with a single
@@ -180,15 +189,16 @@ needing a separate ladder per name.
 
 - **Thin colored lines** — each basket member's own return from entry (%), one color per name
   (see the legend).
-- **Dashed indianred line** — the "Participation Tracker": the terminal payoff formula applied to
+- **Dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula applied to
   each day's worst-of relative performance. Flat at 0% while the worst-of level stays at or above
-  the strike, tracking the worst performer 1:1 below it. This is **not** what you'd actually
-  receive if the note were sold or unwound today - it ignores all remaining time value in the
-  still-live worst-of put. See the right-axis MTM line for the actual fair-value estimate.
+  the strike, tracking the worst performer 1:1 below it. This is an illustration of the payoff
+  formula, **not** what you'd actually receive if the note were sold or unwound today - it ignores
+  all remaining time value in the still-live worst-of put. See the right-axis model-value line for
+  the estimate that accounts for that.
 - **Dotted blue line** — the strike (in relative-performance terms, applied identically to every
   name).
-- **Right axis, solid darkred line** — the note's Monte Carlo fair value (% of par), converging
-  onto the tracker line exactly at maturity.
+- **Right axis, solid darkred line** — the model value of the redemption component (% of par,
+  excludes coupons, Monte Carlo), converging onto the tracker line exactly at maturity.
 
 ### `Greek Sensitivity.png` (the Greeks ladder)
 
@@ -196,7 +206,7 @@ Four panels, x-axis = **a common spot shock applied to every name in the basket 
 (60%–140%). Strike, funding curve, and each name's own vol/correlation/dividend yield are pinned
 at their (real, trailing-window) entry values - only the shared shock moves.
 
-- **Price (% of Par)**: fair value under that common shock - smoothly rising as the shock moves
+- **Price (% of Par)**: model value of the redemption component under that common shock - smoothly rising as the shock moves
   from a broad selloff toward a broad rally, flattening toward par well above the strike.
 - **Delta (per name)**: one line per basket member. All three names start the ladder with similar
   Delta magnitudes (similar vols in the default basket), diverging slightly as their individual
@@ -218,3 +228,15 @@ python3 "Greek Sensitivity.py"
 Data comes from `yfinance` (Yahoo Finance) for every name in the basket - no FRED fallback for
 individual equities (FRED doesn't carry single-name price series), unlike the index-tracking
 products elsewhere in this repo.
+
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, numerical limitations) and the project's AI-assisted learning-project
+disclosure. This product in particular excludes coupon valuation entirely - see the scope note at
+the top of this file.
+
+## The maths
+
+`MATHEMATICS.md` in this folder has the worst-of conversion formula, the QuantLib basket-option
+construction, and the N=1/N=2 verification checks, worked out in full.

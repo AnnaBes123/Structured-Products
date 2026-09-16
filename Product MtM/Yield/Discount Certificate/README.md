@@ -8,6 +8,12 @@ index ticker works - see "Underlying selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 ## Replication
 
 ```
@@ -94,18 +100,21 @@ plain Outperformance certificate):
 
 ## Volatility
 
-Same approach as the other products in this repo: SPX implied vol interpolated from the
-VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity. See the
-`Product MtM/Participation/Outperformance/` folder's README for the full rationale.
+Same approach as the other products in this repo: for an index, SPX implied vol interpolated
+from the VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity;
+for a single-name stock, that ticker's own trailing 2-year realized volatility (held flat, since
+no free historical implied-vol source exists for an arbitrary stock the way VIX serves the
+index). See the `Product MtM/Participation/Outperformance/` folder's README for the full
+rationale on both.
 
 ## Output
 
 Running the script fetches the historical path and vol surface, **solves for `CAP`** from the
 `DISCOUNT` target (printed as its own step), then prints the resolved underlying name and
-dividend yield, entry/maturity levels, realized returns, the certificate's fair value at
+dividend yield, entry/maturity levels, realized returns, the certificate's model value at
 inception (should land within solver tolerance of `100% - DISCOUNT`), and its Greeks - then saves
 a chart with the underlying's price and certificate payoff on the left axis (note the payoff line
-visibly flattens once spot crosses the cap) and the certificate's fair value on its own
+visibly flattens once spot crosses the cap) and the certificate's model value on its own
 right-hand axis. Every label (legend, axis, chart title) uses the resolved underlying name, not a
 hardcoded "S&P 500".
 
@@ -114,10 +123,10 @@ hardcoded "S&P 500".
 ### `Discount Certificate.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to today's level - tracks the index 1:1, then visibly flattens once spot crosses the
   cap (the short call capping the upside).
-- **Right axis, solid darkred line** — the certificate's actual Black-Scholes fair value (% of
+- **Right axis, solid darkred line** — the certificate's Black-Scholes model value (% of
   par) each day, converging onto the dashed line exactly at maturity.
 - The Greeks box (top right) is the day-1 snapshot only - see the ladder chart below for how
   Greeks move with spot.
@@ -130,7 +139,7 @@ and rate - only spot varies. Theta is excluded since tenor never moves across th
 there's nothing meaningful for a "time passing" Greek to show. Both legs here are plain vanilla
 calls, so every Greek is exact closed-form, not finite difference.
 
-- **Price (% of Par)**: the certificate's fair value at that spot level - note it can exceed
+- **Price (% of Par)**: the certificate's model value at that spot level - note it can exceed
   100% below the cap (you're holding the index outright there) and flattens above it.
 - **Delta**: points of certificate value gained/lost per 1-point index move, right now, at that
   spot. Starts near 1.0 at low spot (behaves like the index itself) and falls toward 0 well
@@ -140,7 +149,7 @@ calls, so every Greek is exact closed-form, not finite difference.
   the call = short volatility), largest in magnitude near the cap and fading away from it.
 - **Rho (per 1% change in rates)**: percentage points of par moved per 1-percentage-point move
   in the risk-free rate. Worked example: a reading of **≈ -0.0037 at spot=100%** means "if rates
-  rose from 4% to 5% right now, index unchanged, the certificate's fair value would fall by about
+  rose from 4% to 5% right now, index unchanged, the certificate's model value would fall by about
   0.37 percentage points of par" - roughly $3.70 on a $1,000-par certificate. Small because the
   LEPO leg (long call struck at 0, rho ≈ 0 since it's always exercised - no time-value optionality
   left to be rate-sensitive) and the short call leg's rho largely offset each other.
@@ -161,3 +170,14 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX
 series if Yahoo is unavailable.
+
+## The maths
+
+`MATHEMATICS.md` in this folder has the LEPO closed form and the CAP root-finding derivation
+worked out in full.
+
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

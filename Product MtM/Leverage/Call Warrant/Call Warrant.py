@@ -7,6 +7,25 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    interpolate_implied_vol,
+    fetch_trailing_realized_vol,
+    realized_annualized_vol,
+    max_drawdown,
+    _quantlib_process,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
@@ -17,11 +36,7 @@ RISK_FREE_RATE = 0.04
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
 
-# TICKER drives dividend handling automatically: any "^"-prefixed Yahoo
-# index ticker (e.g. "^GSPC") is treated as paying no dividend (q=0);
-# any real stock ticker (e.g. "AAPL", "MCD") gets a real trailing dividend
-# yield fetched and applied - see fetch_dividend_yield below. No separate
-# flag needed, just set TICKER to whichever kind of underlying you want.
+# TICKER drives dividend handling automatically - see fetch_dividend_yield.
 TICKER = "^GSPC"
 FRED_SERIES = "SP500"
 
@@ -31,79 +46,18 @@ VIX_FRED_SERIES = "VIXCLS"
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
 
 
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """
-    Trailing dividend yield, used as a flat continuous yield q - this is
-    what lets TICKER be either a stock (real dividend yield applied) or an
-    index (q=0). Indices ("^" tickers) are treated as paying none - Yahoo
-    doesn't expose a meaningful per-ticker yield field for them anyway.
-
-    Prefers `trailingAnnualDividendYield` (already a plain fraction, e.g.
-    0.0032 for 0.32%) over `dividendYield`, since yfinance/Yahoo have at
-    various times returned the latter as a PERCENTAGE (e.g. 0.33 meaning
-    0.33%, not 33%) rather than a fraction - mixing the two up would
-    silently overstate the yield ~100x. Falls back to dividendRate/price
-    if even that field is missing.
-    """
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
-
-
 def fetch_index_path(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
-    return fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    path = fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    if path.index[-1] < end - pd.Timedelta(days=10):
+        raise RuntimeError(
+            f"Requested window {start.date()} to {end.date()} extends past the last available "
+            f"trading day ({path.index[-1].date()}) - this script models a COMPLETED historical "
+            f"window, not a live in-progress note. Pick an ENTRY_DATE/TENOR combination that ends "
+            f"on or before today."
+        )
+    return path
 
 
 def fetch_vol_term_structure(entry_date, years=TENOR):
@@ -125,55 +79,9 @@ def fetch_vol_term_structure(entry_date, years=TENOR):
     return term_structure
 
 
-def interpolate_implied_vol(vols_by_tenor, T_years):
-    points = sorted(vols_by_tenor.items())
-
-    if T_years <= points[0][0]:
-        return points[0][1]
-    if T_years >= points[-1][0]:
-        return points[-1][1]
-
-    for (t0, v0), (t1, v1) in zip(points, points[1:]):
-        if t0 <= T_years <= t1:
-            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
-            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
-            return np.sqrt(var_T / T_years)
-
-    return points[-1][1]
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
-# ---------------------------------------------------------------------------
-# REPLICATION: Call Warrant = Long European Vanilla Call, struck at STRIKE
-#
-# Literally nothing more than a standard long vanilla call - no ZCB, no
-# LEPO, no barrier, no participation multiple. This is a naked LONG
-# OPTION POSITION, not a prepackaged debt instrument: there is no
-# principal being lent to an issuer and no par value to speak of, unlike
-# every other product in this repo (which are all built around a ZCB or
-# LEPO leg). Accordingly this file does NOT express price/Greeks as a
-# percentage of S0/par the way the note products do - there's no par here
-# to express them against. Price and Greeks are reported in the same raw
-# units a standard option pricing screen would use: Delta dimensionless,
-# Vega/Rho per 1-percentage-point move, Theta per year/day, all in the
-# underlying's own price units (index points, or $ for a single stock).
-#
-# Priced via QuantLib's AnalyticEuropeanEngine (closed-form Black-Scholes-
-# Merton, dividend yield q a native input) - European exercise only, as
-# specified; no barrier feature means no CRR lattice anywhere in this
-# file either, and the Greeks come directly from QuantLib.
-#
-# Terminal payoff: max(S_T - Strike, 0).
-# ---------------------------------------------------------------------------
+# REPLICATION: Long European Vanilla Call, struck at STRIKE. No ZCB/par -
+# a naked option position, not a debt instrument, so price/Greeks are in
+# raw underlying-price units, not % of par. See README.
 
 def call_warrant_price(S, K, T, r, sigma, q=0.0):
     """Plain European call via QuantLib's AnalyticEuropeanEngine. This IS
@@ -187,7 +95,7 @@ def call_warrant_price(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Call, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -200,13 +108,8 @@ def call_warrant_price(S, K, T, r, sigma, q=0.0):
 
 
 def call_warrant_intrinsic_value(S0, path):
-    """
-    The terminal payoff FORMULA applied to today's spot, max(S - Strike,
-    0), in the underlying's own price units (NOT a percentage - there's no
-    par to express it against). This is NOT what you'd actually receive if
-    the warrant were sold today - it ignores all remaining time value.
-    See the MTM fair-value line for the actual today's-value estimate.
-    """
+    """Intrinsic value if exercised today, max(S-Strike, 0) - not what
+    you'd receive if sold today. See README "Reading the charts"."""
     strike_level = STRIKE * S0
     return pd.Series(np.maximum(path.values - strike_level, 0.0), index=path.index)
 
@@ -221,17 +124,6 @@ def call_warrant_mtm_price_series(S0, path, vol_term_structure, r=RISK_FREE_RATE
         sigma = interpolate_implied_vol(vols_today, max(T_remaining, 0.0))
         prices.append(call_warrant_price(level, K, T_remaining, r, sigma, q)["price"])
     return pd.Series(prices, index=path.index)
-
-
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
-
-
-def max_drawdown(path):
-    running_max = path.cummax()
-    drawdown = path / running_max - 1
-    return drawdown.min()
 
 
 def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=None, q=0.0):
@@ -278,7 +170,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
         mtm_price = call_warrant_mtm_price_series(S0, path, mtm_vol_term_structure, q=q)
         mtm_line, = ax2.plot(
             mtm_price.index, mtm_price.values, color="darkred", linewidth=1.5,
-            linestyle="solid", label="Call Warrant - Approximate MtM")
+            linestyle="solid", label="Call Warrant — Model Value")
         right_lines, right_labels = ax2.get_legend_handles_labels()
         lines += right_lines
         labels += right_labels
@@ -293,7 +185,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
 
     end_date = index_return_pct.index[-1]
     ax.set_title(f"{underlying_name} Price Return Path from {path.index[0].date()} to {end_date.date()} \n"
-                 f"vs Approximate Mark-to-Market (MtM) Value of Call Warrant")
+                 f"vs Model Value ({TICKER} price units) — Call Warrant")
     ax.legend(lines, labels, loc="upper left", fontsize=9)
     plt.tight_layout()
     plt.savefig(OUTPUT_PNG, dpi=150, bbox_inches="tight")
@@ -315,14 +207,24 @@ if __name__ == "__main__":
     dividend_yield = fetch_dividend_yield(TICKER)
     print(f"Dividend yield for {underlying_name} ({TICKER}): {dividend_yield:.2%} (flat, continuous - 0% if an index)")
 
-    print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
-    raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
-    vol_term_structure = {
-        tenor: series.reindex(path.index).ffill().bfill()
-        for tenor, series in raw_term_structure.items()
-    }
-    vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
-    entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+    if TICKER.startswith("^"):
+        print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
+        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        vol_term_structure = {
+            tenor: series.reindex(path.index).ffill().bfill()
+            for tenor, series in raw_term_structure.items()
+        }
+        vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
+        entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+        vol_source_desc = f"interpolated from the {path.index[0].date()} VIX/VIX3M/VIX6M term structure"
+    else:
+        print(f"\n{TICKER} is a single name - no free historical implied-vol source exists for it, so")
+        print(f"using its own trailing 2y REALIZED volatility instead of the SPX VIX/VIX3M/VIX6M proxy")
+        print(f"(held flat for the note's life, same technique as the DCI/Multi-FCN/Multi-RC products):")
+        entry_vol = fetch_trailing_realized_vol(TICKER, ENTRY_DATE)
+        vol_term_structure = {TENOR: pd.Series(entry_vol, index=path.index)}
+        vol_source_desc = f"{TICKER}'s own trailing 2y realized vol (not VIX-derived)"
+        print(f"  {entry_vol:.2%}")
 
     greeks = call_warrant_price(S0, K, TENOR, RISK_FREE_RATE, entry_vol, dividend_yield)
     entry_premium = greeks["price"]
@@ -343,10 +245,10 @@ if __name__ == "__main__":
 
     print("\n" + summary.to_string())
 
-    print(f"\nCall Warrant fair value at inception")
+    print(f"\nCall Warrant — model value at inception")
     print(f"(QuantLib AnalyticEuropeanEngine, S=S0, K={STRIKE:.0%} of S0={S0:,.2f}, T={TENOR}y,")
-    print(f"vol={entry_vol:.2%} interpolated from the {path.index[0].date()} VIX/VIX3M/VIX6M term")
-    print(f"structure, SOFR {RISK_FREE_RATE:.2%}, dividend yield {dividend_yield:.2%}):")
+    print(f"vol={entry_vol:.2%} {vol_source_desc},")
+    print(f"SOFR {RISK_FREE_RATE:.2%}, dividend yield {dividend_yield:.2%}):")
     print(f"  Premium: {entry_premium:,.2f} ({TICKER} price units)")
 
     print(f"\nCall Warrant Greeks at inception (closed-form):")

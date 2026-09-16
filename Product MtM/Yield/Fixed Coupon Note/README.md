@@ -9,6 +9,13 @@ selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **Scope: model value of the redemption component — excludes coupons.** Everything this script
+> computes and charts as "Model Value" is the value of the principal repayment plus the embedded
+> downside feature (the short put) — the part of the FCN that's actually modeled here. It does
+> **not** include the value of the periodic coupon cash flows a real Fixed Coupon Note also pays;
+> coupon valuation is out of scope for this project (see `Product MtM/README.md`). Don't read the
+> printed/charted value as total investor return or as a full note fair value.
+
 ## Replication
 
 ```
@@ -86,21 +93,25 @@ All four are closed-form (verified against finite differences before shipping):
 
 ## Volatility
 
-Same approach as the other products in this repo: SPX implied vol interpolated from the
-VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity (not a
-flat number, and not the raw 30-day VIX applied to a much longer holding period). See the
-`Product MtM/Participation/Outperformance/` folder's README for the full rationale and the known limitation beyond 182
+Same approach as the other products in this repo: for an index, SPX implied vol interpolated
+from the VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity
+(not a flat number, and not the raw 30-day VIX applied to a much longer holding period); for a
+single-name stock, that ticker's own trailing 2-year realized volatility (held flat, since no
+free historical implied-vol source exists for an arbitrary stock the way VIX serves the index).
+See the `Product MtM/Participation/Outperformance/` folder's README for the full rationale on
+both, and the known limitation beyond 182
 days (VIX6M held flat, since there's no free historical source for a longer-dated implied vol).
 
 ## Output
 
 Running the script prints the resolved underlying name and dividend yield, entry/maturity
-levels, realized returns, the note's fair value at inception (as % of par - note this is
-typically **below** par, since the ZCB alone doesn't earn back its own discount without the put
-premium topping it up), and its Greeks - then saves a chart with the underlying's price and note
-payoff on the left axis and the note's fair value on its own right-hand axis, with a dotted line
-marking the strike. Every label (legend, axis, chart title) uses the resolved underlying name,
-not a hardcoded "S&P 500".
+levels, realized returns, the note's model value of the redemption component at inception (as %
+of par, excluding coupons - note this is typically **below** par, since the ZCB alone doesn't earn
+back its own discount without the put premium topping it up, and there is no coupon leg here to
+top it up further), and its Greeks - then saves a chart with the underlying's price and note
+payoff on the left axis and the model value on its own right-hand axis, with a dotted line marking
+the strike. Every label (legend, axis, chart title) uses the resolved underlying name, not a
+hardcoded "S&P 500".
 
 ## Reading the charts
 
@@ -109,13 +120,13 @@ This folder has two products (plain and autocallable) with two charts each.
 ### `Fixed Coupon Note.png` (plain FCN historical approximation)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to each day's spot, flat at 0% above the strike, falling 1:1 with the index below it
-  (dotted blue line marks the strike). This is **not** what you'd actually receive if the note
-  were sold or unwound on that date - it ignores all remaining time value in the still-live put.
-  See the right-axis MTM line for the actual fair-value estimate.
-- **Right axis, solid darkred line** — the note's actual fair value (% of par), converging onto
-  the tracker line exactly at maturity.
+  (dotted blue line marks the strike). This is an **illustration of the payoff formula, not** what
+  you'd actually receive if the note were sold or unwound on that date - it ignores all remaining
+  time value in the still-live put. See the right-axis line for the model value estimate.
+- **Right axis, solid darkred line** — the model value of the redemption component (% of par,
+  excludes coupons), converging onto the tracker line exactly at maturity.
 
 ### `Greek Sensitivity.png` (plain FCN Greeks ladder)
 
@@ -123,7 +134,7 @@ Four panels, x-axis = **spot as % of S0** (60%–140%). Tenor, strike, funding c
 pinned at day-1 values throughout - only spot varies; Theta is excluded since tenor never moves.
 All four Greeks are exact closed-form here (this note is just ZCB minus a plain vanilla put).
 
-- **Price (% of Par)**: fair value at that spot level.
+- **Price (% of Par)**: model value of the redemption component at that spot level.
 - **Delta**: points of note value per 1-point index move, right now, at that spot.
 - **Vega (per 1% change in vol)**: percentage points of par per 1-percentage-point vol move.
   **Not a fixed number** - recomputed at every spot, always negative (short volatility), largest
@@ -136,15 +147,21 @@ All four Greeks are exact closed-form here (this note is just ZCB minus a plain 
 ### `Fixed Coupon Note (Autocallable).png` (autocallable historical approximation)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to today's level, flat at 0% once the note has actually autocalled in this historical
   path (see the darkgreen "Autocalled" marker).
 - **Left axis, mediumseagreen dotted vertical lines** — every quarterly observation date,
   whether or not it triggered the autocall; a darkgreen dashed line marks the one that actually
   did (if any).
-- **Right axis, solid darkred line** — the note's Monte Carlo fair value (% of par); this is
-  simulated, not closed-form, since the autocall payoff depends on multiple discrete future
-  dates jointly (see the file's own comments on why no simple Black-Scholes formula applies).
+- **Right axis, solid darkred line** — the model value of the redemption component (% of par,
+  excludes coupons); this is simulated via Monte Carlo, not closed-form, since the autocall
+  payoff depends on multiple discrete future dates jointly (see the file's own comments on why no
+  simple Black-Scholes formula applies). **This line ends at the actual autocall date** if the
+  note called in this historical path - once settled, there is no live note left to mark.
+- **Right axis, gray dotted line ("Cash Proceeds After Autocall")** — appears only if the note
+  actually autocalled: the par amount received at settlement, held flat with no reinvestment
+  assumed, through the end of the charted window. This is cash-in-hand accounting, not a
+  continuing mark-to-market of the (now-settled) note, and it also excludes coupons.
 
 ### `Greek Sensitivity (Autocallable).png` (autocallable Greeks ladder)
 
@@ -170,3 +187,16 @@ python3 "Greek Sensitivity (Autocallable).py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX
 series if Yahoo is unavailable.
+
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's AI-assisted
+learning-project disclosure. This product in particular excludes coupon valuation entirely - see
+the scope note at the top of this file.
+
+## The maths
+
+`MATHEMATICS.md` in this folder has every formula the four scripts compute, fully worked out:
+the ZCB and Black-Scholes closed forms, the conversion-ratio derivation, the autocallable's Monte
+Carlo engine, and the closed-form joint first-passage check on the autocall feature.

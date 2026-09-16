@@ -9,6 +9,12 @@ but any single-name stock or index ticker works - see "Underlying selection" bel
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 This is the first product in `Product MtM/Capital Protection/` — distinct from the `Yield/`
 products (Reverse Convertible, Fixed Coupon Note, Barrier Reverse Convertible, Discount
 Certificate), which are all short an option leg to finance an enhanced coupon at the cost of
@@ -151,9 +157,9 @@ passes the actual number of remaining trading days as the CRR lattice's step cou
 
 Running `Bullish Sharkfin.py` prints the resolved underlying name and dividend yield,
 entry/maturity levels, realized returns, whether the barrier was actually touched in this
-historical path, the closed-form verification check, the note's fair value at inception (as % of
+historical path, the closed-form verification check, the note's model value at inception (as % of
 par), and its Greeks — then saves a chart with the underlying's price and note payoff on the left
-axis and the note's fair value on its own right-hand axis, with dotted lines marking the strike
+axis and the note's model value on its own right-hand axis, with dotted lines marking the strike
 (blue) and barrier (green), and — if the barrier was touched in this path — a vertical dashed
 green line at the knock-out date.
 
@@ -167,16 +173,16 @@ spot.
 ### `Bullish Sharkfin.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to each day's spot (flat at 0% below the strike, tracking the index 1:1 above it, as
   long as never breached). This is **not** what you'd actually receive if the note were sold or
   unwound on that date - it ignores all remaining time value in the still-live call. It's the
   closest thing to a running "how much upside has this path locked in so far" readout, not a
-  settlement value - see the right-axis MTM line for the actual fair-value estimate.
+  settlement value - see the right-axis MTM line for the model-value estimate.
 - **Left axis, dotted lines** — blue marks the strike, green marks the barrier; a dashed green
   vertical line (with a "Barrier Knocked Out" label) marks the date the barrier was actually
   touched, if it was, in this historical path.
-- **Right axis, solid darkred line** — the note's fair value (% of par), converging onto the
+- **Right axis, solid darkred line** — the note's model value (% of par), converging onto the
   tracker line exactly at maturity (an option's time value is 0 at expiry, so the two are
   identical by then).
 
@@ -214,3 +220,8 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

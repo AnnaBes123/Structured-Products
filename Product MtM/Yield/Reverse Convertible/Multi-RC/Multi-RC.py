@@ -7,11 +7,27 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    _quantlib_process,
+    zcb_price_and_greeks,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
-# --- Product terms (same base terms as the plain "Reverse Convertible.py", one
-# folder up, plus the worst-of basket feature) ---
+# --- Product terms (same base terms as "Reverse Convertible.py", one folder
+# up, plus the worst-of basket feature - see README for the full rationale) ---
 STRIKE = 0.90                  # worst-of put strike, as a fraction of each name's OWN entry level
 RISK_FREE_RATE = 0.04          # SOFR proxy - used for BOTH the ZCB leg and the option leg
 GS_CDS_SPREAD = 0.005308       # Goldman Sachs 5y CDS, 53.08 bps - issuer credit spread, ZCB leg only
@@ -19,152 +35,43 @@ GS_CDS_SPREAD = 0.005308       # Goldman Sachs 5y CDS, 53.08 bps - issuer credit
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
 
-# Three names from three different sectors on purpose - the whole point of a
-# worst-of note is that dispersion (low correlation) across the basket makes
-# the note WORSE for the investor than any single-name RC at the same
-# strike, since there are more independent chances for "the worst name" to
-# breach. Same-sector, highly-correlated names would understate that effect.
-TICKERS = ["AAPL", "JPM", "XOM"]
-
-# Vol AND correlation are both estimated from REAL trailing daily closes -
-# not fabricated, not implied vol (no free per-name options data source is
-# wired up anywhere in this repo - see the README for the single-name RC's
-# own SPX-vol-as-proxy simplification, which doesn't generalize cleanly to
-# three unrelated names either). CORRELATION_LOOKBACK_YEARS is a TRAILING
-# window ending at ENTRY_DATE (data an investor actually had on the pricing
-# date) - not the backtest window itself, which would leak forward-looking
-# information into a day-1 price.
-CORRELATION_LOOKBACK_YEARS = 2
+TICKERS = ["AAPL", "JPM", "XOM"]  # 3 sectors on purpose - see README "dispersion" discussion
+CORRELATION_LOOKBACK_YEARS = 2   # trailing window ending at ENTRY_DATE, no look-ahead
 
 N_MC_PATHS = 50000
 MC_SEED = 42
 
-# Common market-wide shock applied to every name at once - see the
-# "Greeks ladder" section of the README for why this is the natural x-axis
-# for a multi-asset product (as opposed to bumping one name at a time).
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
 
 
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q. Indices
-    ("^" tickers) are treated as paying none. See the single-name RC's
-    README (one folder up) for the full rationale and field-selection
-    notes - identical mechanism, just called once per basket name here."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
-
-
 def fetch_multi_asset_path(tickers, start, end):
-    """
-    Daily close series for every basket name, aligned on the trading dates
-    ALL of them share (inner join) - a US-listed multi-name basket should
-    have near-identical calendars, but this guards against any one name's
-    occasional missing print instead of silently misaligning dates.
-    """
+    """Daily closes for every basket name, aligned on shared trading
+    dates (inner join) to guard against one name's missing print."""
     series = {ticker: fetch_daily_closes(ticker, start, end) for ticker in tickers}
     df = pd.concat(series, axis=1)
-    return df.dropna(how="any")
+    df = df.dropna(how="any")
+    if df.index[-1] < end - pd.Timedelta(days=10):
+        raise RuntimeError(
+            f"Requested window {start.date()} to {end.date()} extends past the last available "
+            f"trading day ({df.index[-1].date()}) - this script models a COMPLETED historical "
+            f"window, not a live in-progress note. Pick an ENTRY_DATE/TENOR combination that ends "
+            f"on or before today."
+        )
+    return df
 
 
 def estimate_vols_and_correlation(calibration_price_df):
-    """
-    Realized annualized vol per name AND the full correlation matrix,
-    estimated from the SAME real trailing daily-close history (log
-    returns) - both are genuinely sourced numbers, not assumptions, same
-    standard as every other real-data input in this repo. See
-    CORRELATION_LOOKBACK_YEARS above for why this window ends at
-    ENTRY_DATE rather than overlapping the backtest itself.
-    """
+    """Realized annualized vol per name plus the full correlation
+    matrix, both from the same trailing real daily-close history."""
     log_returns = np.log(calibration_price_df / calibration_price_df.shift(1)).dropna()
     vols = log_returns.std() * np.sqrt(252)
     corr = log_returns.corr()
     return vols.to_dict(), corr
 
 
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
-
-
-def max_drawdown(path):
-    running_max = path.cummax()
-    drawdown = path / running_max - 1
-    return drawdown.min()
-
-
-def zcb_price_and_greeks(principal, T_remaining, funding_rate):
-    discount = (1 + funding_rate) ** T_remaining
-    price = principal / discount
-    rho = -T_remaining * price / (1 + funding_rate)
-    theta = price * np.log(1 + funding_rate)
-    return {"price": price, "rho": rho, "theta": theta}
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
 def black_scholes_put(S, K, T, r, sigma, q=0.0):
     """Plain European put via QuantLib's AnalyticEuropeanEngine - the N=1
-    degenerate case of the worst-of basket, used only in
-    verify_against_closed_form."""
+    degenerate case, used only in verify_against_closed_form."""
     if T <= 0:
         return {"price": max(K - S, 0.0)}
 
@@ -172,7 +79,7 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -180,54 +87,15 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
     return {"price": option.NPV()}
 
 
-# ---------------------------------------------------------------------------
-# REPLICATION: Multi-RC (Worst-of Reverse Convertible)
-#            = Long Zero-Coupon Bond (Principal)
-#            - Short Put on the WORST-OF RELATIVE PERFORMANCE across the
-#              basket (struck at STRIKE, quantity 1/STRIKE)
-#
-# "Worst-of relative performance" at any date = min_i(S_i / S0_i) - each
-# name normalized by its OWN entry level, not compared in raw dollar terms
-# (comparing a $50 stock's price to a $500 stock's would be meaningless).
-# Below STRIKE, the note converts into Principal/Strike units of WHICHEVER
-# NAME is currently the worst performer - the standard real-world
-# convention for worst-of reverse-convertible-style notes, and the direct
-# N-asset generalization of the single-name RC's own conversion-ratio
-# logic (see that product's README for the 1/Strike derivation).
-#
-# PRICED NATIVELY VIA QUANTLIB'S OWN BASKET-OPTION MACHINERY, not a
-# hand-rolled Monte Carlo:
-#   - Each name's process is a BlackScholesMertonProcess, spot normalized
-#     to RELATIVE performance (1.0 at entry, or S_i(t)/S0_i at a later
-#     MTM date) - a driftless-in-log rescaling that works because a
-#     continuous-dividend GBM's relative-performance process obeys the
-#     exact same SDE (same vol, same q) regardless of the dollar level
-#     it's expressed in.
-#   - ql.StochasticProcessArray bundles the per-name processes together
-#     with the full correlation matrix - this is where correlation
-#     actually enters the model (QuantLib handles the Cholesky-style
-#     transform internally; nothing hand-rolled here).
-#   - ql.MinBasketPayoff wraps a plain vanilla put payoff so it's applied
-#     to the MINIMUM of the (relative-performance) basket, not any single
-#     name in isolation - this is what makes it "worst-of."
-#   - ql.MCEuropeanBasketEngine prices it - QuantLib has no closed-form
-#     engine for baskets of more than 2 names, so Monte Carlo is the live
-#     pricer for any basket size. For exactly 2 names, QuantLib DOES have
-#     a closed-form engine (ql.StulzEngine, the Stulz 1982 bivariate
-#     model) - used here only as a convergence BENCHMARK in
-#     verify_against_closed_form, the same "closed form as a sanity
-#     check, not the live pricer" pattern as the Barrier Reverse
-#     Convertible's CRR-vs-AnalyticBarrierEngine check.
-# ---------------------------------------------------------------------------
+# REPLICATION: ZCB(Principal) - Short Put on worst-of relative performance,
+# priced NATIVELY via QuantLib's basket-option machinery (no hand-rolled
+# Monte Carlo needed - see README.md and MATHEMATICS.md section 3).
 
 def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths=N_MC_PATHS, seed=MC_SEED):
-    """
-    MC price of a worst-of put on relative performance, via QuantLib's
-    native basket-option engine (StochasticProcessArray + MinBasketPayoff
-    + MCEuropeanBasketEngine) - not a hand-rolled correlated simulation.
-    `relative_spots[i]` is name i's CURRENT performance relative to ITS
-    OWN entry level (1.0 at inception; S_i(t)/S0_i at a later MTM date).
-    """
+    """MC price of a worst-of put via QuantLib's native basket engine
+    (StochasticProcessArray + MinBasketPayoff + MCEuropeanBasketEngine).
+    `relative_spots[i]` is name i's performance relative to its own
+    entry level."""
     n = len(relative_spots)
     today = ql.Date(1, 1, 2000)
     ql.Settings.instance().evaluationDate = today
@@ -243,7 +111,7 @@ def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     basket_payoff = ql.MinBasketPayoff(payoff)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     option = ql.BasketOption(basket_payoff, exercise)
 
@@ -254,10 +122,9 @@ def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths
 
 
 def stulz_put_price(relative_spot_1, relative_spot_2, K, T, r, sigma_1, sigma_2, q_1, q_2, rho):
-    """Closed-form (Stulz 1982) 2-asset worst-of put via QuantLib's own
-    StulzEngine - exact, no Monte Carlo noise. Used ONLY as a convergence
-    benchmark for worst_of_put_price at N=2, never as the live pricer for
-    an arbitrary-size basket."""
+    """Closed-form (Stulz 1982) 2-asset worst-of put via QuantLib's
+    StulzEngine - a convergence benchmark for worst_of_put_price at N=2
+    only, never the live pricer."""
     today = ql.Date(1, 1, 2000)
     ql.Settings.instance().evaluationDate = today
     p1 = _quantlib_process(relative_spot_1, r, q_1, sigma_1, today)
@@ -265,7 +132,7 @@ def stulz_put_price(relative_spot_1, relative_spot_2, K, T, r, sigma_1, sigma_2,
 
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     basket_payoff = ql.MinBasketPayoff(payoff)
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     option = ql.BasketOption(basket_payoff, exercise)
     option.setPricingEngine(ql.StulzEngine(p1, p2, rho))
@@ -274,13 +141,8 @@ def stulz_put_price(relative_spot_1, relative_spot_2, K, T, r, sigma_1, sigma_2,
 
 def multi_rc_price(relative_spots, T_remaining, sigmas, qs, corr_matrix, r=RISK_FREE_RATE,
                      credit_spread=GS_CDS_SPREAD, n_paths=N_MC_PATHS, seed=MC_SEED):
-    """
-    Principal = 1.0 ("PAR" units) throughout - there's no single dollar S0
-    to anchor to with more than one underlying, so everything is carried
-    in fractions of par instead, same as every "% of par" figure printed
-    elsewhere in this repo, just made the primary unit here rather than a
-    display-time conversion.
-    """
+    """Principal = 1.0 ("par" units) - no single dollar S0 to anchor to
+    with more than one underlying."""
     zcb = zcb_price_and_greeks(1.0, T_remaining, r + credit_spread)
     put_quantity = 1.0 / STRIKE
 
@@ -294,19 +156,8 @@ def multi_rc_price(relative_spots, T_remaining, sigmas, qs, corr_matrix, r=RISK_
 
 
 def verify_against_closed_form(sigmas, qs, corr_matrix, T, r=RISK_FREE_RATE, n_paths=N_MC_PATHS):
-    """
-    Two independent checks that the QuantLib basket-option wiring is
-    correct, before trusting it for the actual basket in TICKERS:
-
-    1. N=1 degenerate case: a "basket" of exactly one name must reduce to
-       an ordinary vanilla put (QuantLib's AnalyticEuropeanEngine) - the
-       MinBasketPayoff of a single asset is trivially just that asset.
-    2. N=2 convergence: MCEuropeanBasketEngine (the general, arbitrary-N
-       live pricer) should converge onto ql.StulzEngine's exact
-       closed-form price as the path count grows, for the standard
-       2-asset worst-of case - confirms StochasticProcessArray's
-       correlation handling and MinBasketPayoff are wired correctly.
-    """
+    """N=1 and N=2 reduction checks against independent QuantLib
+    closed-form benchmarks - see MATHEMATICS.md section 4."""
     single_relative = [1.0]
     mc_single = worst_of_put_price(single_relative, STRIKE, T, r, sigmas[:1], qs[:1],
                                      np.array([[1.0]]), n_paths=n_paths, seed=MC_SEED)
@@ -327,17 +178,8 @@ def verify_against_closed_form(sigmas, qs, corr_matrix, T, r=RISK_FREE_RATE, n_p
 
 
 def worst_of_running_return(S0_list, price_df):
-    """
-    Participation Tracker: the terminal payoff FORMULA applied to each
-    day's relative-performance basket - full principal back if the WORST
-    performer (relative to its own entry level) is at or above STRIKE;
-    below it, value = Principal * (worst_of / STRIKE), exactly the
-    single-name RC's conversion-ratio formula applied to whichever name
-    is currently worst. This is NOT what you'd actually receive if the
-    note were sold or unwound today - it ignores all remaining time value
-    in the still-live worst-of put. See the MTM line for the actual
-    fair-value estimate.
-    """
+    """Redemption Payoff (Relative to Par), worst-of - see README
+    "Reading the charts"."""
     relative = price_df / pd.Series(S0_list, index=price_df.columns)
     worst_of = relative.min(axis=1)
     running = pd.Series(0.0, index=price_df.index)
@@ -361,20 +203,9 @@ def multi_rc_mtm_price_series(S0_list, price_df, sigmas, qs, corr_matrix, r=RISK
 
 def finite_difference_greeks(relative_spots, T, sigmas, qs, corr_matrix, r=RISK_FREE_RATE,
                               credit_spread=GS_CDS_SPREAD, n_paths=N_MC_PATHS, seed=MC_SEED):
-    """
-    Bump-and-reprice Greeks, one Delta and one Vega PER NAME (a multi-asset
-    product's risk is genuinely a vector, not a scalar - an issuer hedging
-    this note needs to know its exposure to each underlying separately),
-    plus a single Rho and Theta (shared funding rate / time, same as every
-    other product here). Common random numbers (same MC_SEED reused for
-    every bumped evaluation) keep the finite differences from being
-    swamped by independent Monte Carlo noise - confirmed stable down to a
-    ~0.1% bump in a direct bump-size scan (see the README), so the modest
-    1%-of-relative-spot / 0.5-vol-point bumps here (much tighter than the
-    CRR-lattice products' 2%/2-vol-point convention) are already
-    well within the stable region - this is a smooth MC price, not a
-    lattice with discrete sawtooth artifacts.
-    """
+    """Bump-and-reprice Greeks, one Delta/Vega per name (risk is a
+    vector). Common random numbers (MC_SEED) - bump sizes confirmed
+    stable in the README's bump-size scan."""
     n = len(relative_spots)
     bump_S, bump_sigma, bump_r, bump_T = 0.01, 0.005, 0.0001, 7 / 365
 
@@ -419,7 +250,7 @@ def plot_path(price_df, S0_list, tickers, underlying_names, mtm_enabled=True, si
                 linewidth=1.1, alpha=0.85, label=underlying_names[i])
 
     ax.plot(tracker_pct.index, tracker_pct.values, color="indianred", linewidth=1.8,
-            linestyle="dashed", label="Multi-RC Participation Tracker (worst-of)")
+            linestyle="dashed", label="Multi-RC Redemption Payoff (Relative to Par) (worst-of)")
 
     ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
     ax.axhline(0, color="lightgrey", linewidth=0.8)
@@ -456,8 +287,8 @@ def plot_path(price_df, S0_list, tickers, underlying_names, mtm_enabled=True, si
         ax2 = ax.twinx()
         mtm_line, = ax2.plot(
             mtm_gain_over_par_pct.index, mtm_gain_over_par_pct.values, color="darkred", linewidth=1.8,
-            linestyle="solid", label="Multi-RC - Approximate MtM (% of Par, QuantLib basket MC)")
-        ax2.set_ylabel("MtM Fair Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
+            linestyle="solid", label="Multi-RC — Model Value of Redemption Component (% of Par, excl. coupons, QuantLib basket MC)")
+        ax2.set_ylabel("Redemption Component Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
         ax2.tick_params(axis="y", labelcolor="darkred")
 
         combined_min = min(combined_min, mtm_gain_over_par_pct.min())
@@ -475,7 +306,7 @@ def plot_path(price_df, S0_list, tickers, underlying_names, mtm_enabled=True, si
     basket_label = " / ".join(underlying_names)
     end_date = index_return_pct.index[-1]
     ax.set_title(f"Worst-of Basket ({basket_label}) Price Return Path from {price_df.index[0].date()} to {end_date.date()} \n"
-                 f"vs Approximate Mark-to-Market (MtM) Value of Multi-RC")
+                 f"vs Model Value of Redemption Component (Excludes Coupons) — Multi-RC")
     ax.legend(lines, labels, loc="upper left", fontsize=9)
     plt.tight_layout()
     plt.savefig(OUTPUT_PNG, dpi=150, bbox_inches="tight")
@@ -545,7 +376,7 @@ if __name__ == "__main__":
     greeks = finite_difference_greeks([1.0] * len(TICKERS), TENOR, sigmas, dividend_yields, corr_matrix)
     fair_value_pct_of_par = greeks["price"]
 
-    print(f"\nMulti-RC fair value at inception")
+    print(f"\nMulti-RC — model value of redemption component at inception (excludes coupons)")
     print(f"(QuantLib MCEuropeanBasketEngine, {N_MC_PATHS:,} paths, ZCB discounted at SOFR")
     print(f"{RISK_FREE_RATE:.2%} + Goldman Sachs CDS {GS_CDS_SPREAD:.2%}, worst-of put at SOFR alone,")
     print(f"T={TENOR}y, strike={STRIKE:.0%}):")
@@ -558,7 +389,6 @@ if __name__ == "__main__":
 
     print(f"\nFor comparison, a SINGLE-name Reverse Convertible at the same {STRIKE:.0%} strike on just the worst")
     print(f"performer alone would be worth (closed form, ignoring the other two names entirely):")
-    worst_idx = int(np.argmin(sigmas))  # informative only - not used in pricing
     single_name_zcb = zcb_price_and_greeks(1.0, TENOR, RISK_FREE_RATE + GS_CDS_SPREAD)
     for t, n, s, q in zip(TICKERS, underlying_names, sigmas, dividend_yields):
         single_put = black_scholes_put(1.0, STRIKE, TENOR, RISK_FREE_RATE, s, q)["price"]
