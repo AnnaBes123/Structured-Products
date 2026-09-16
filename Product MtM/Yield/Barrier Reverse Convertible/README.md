@@ -13,6 +13,13 @@ index ticker works - see "Underlying selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **Scope: model value of the redemption component — excludes coupons.** Everything this script
+> computes and charts as "Model Value" is the value of the principal repayment plus the embedded
+> down-and-in put - the part of the structure that's actually modeled here. It does **not**
+> include the value of the periodic coupon cash flows a real Barrier Reverse Convertible also
+> pays; coupon valuation is out of scope for this project (see `Product MtM/README.md`). Don't
+> read the printed/charted value as total investor return or as a full note fair value.
+
 ## Replication
 
 ```
@@ -46,79 +53,26 @@ on the terminal price alone. This is the standard structure sold under the "Barr
 Convertible" name by most issuers: protection holds unless the barrier is breached, at which
 point the note is exposed like an ordinary reverse convertible.
 
-## Pricing the embedded put — derivation
+## Pricing the embedded put
 
-An earlier version of this script priced the down-and-in put with the textbook closed form (the
-reflection principle / method of images — still used, unchanged, for the embedded barrier put in
-the `Bonus-Outperfomance` certificate (`Product MtM/Participation/Bonus-Outperfomance/`). That formula is only correct under
-**true continuous monitoring**: it prices the probability of touching the barrier at *any instant*
-over `[0, T]`. But the note can only ever actually be observed once per trading day, and
-continuous monitoring systematically overstates the touch probability relative to discrete daily
-monitoring — pricing the option one way while checking the historical barrier touch a different
-way (daily data) was an internal inconsistency, not just a simplification. This script now prices
-the put on a **Cox-Ross-Rubinstein (CRR) binomial lattice** instead, via QuantLib
-(`BinomialCRRBarrierEngine`), with the barrier checked once per lattice step and the step count
-set to the actual number of remaining trading days — so the model's monitoring frequency matches
-the frequency at which the note's price could ever actually be observed, by construction.
+Priced on a **Cox-Ross-Rubinstein (CRR) binomial lattice** (QuantLib's `BinomialCRRBarrierEngine`),
+not the textbook continuous-monitoring closed form - the note can only ever actually be observed
+once per trading day, and continuous monitoring systematically overstates the touch probability
+relative to that. The lattice's barrier-check frequency (step count) is set to the actual number
+of remaining trading days, so the model's monitoring frequency matches reality by construction.
+Once the barrier has been touched, the put is priced from then on as an ordinary vanilla put - no
+longer barrier-contingent at all, mirroring the plain Reverse Convertible from that point.
 
-**Lattice mechanics** (`down_and_in_put_crr` in `Barrier Reverse Convertible.py`): over `N` steps
-of size `Δt = T/N`, with up/down factors `u = e^{σ√Δt}`, `d = 1/u` and risk-neutral probability
-`p = (e^{rΔt} − d)/(u − d)`, QuantLib carries two value arrays per lattice node — one assuming the
-barrier has not yet been touched on the path arriving at that node, one assuming it has (a plain
-vanilla put value from that node onward) — and backward-induces both from the terminal payoff to
-today. A node at or below the barrier collapses its "not yet touched" value onto the "already
-touched" value; this is exactly the down-and-in/knocked-in mechanic the note itself has, just
-resolved once per step instead of via a closed-form probability.
+Since a down-and-in put is worth *less* than an equivalent vanilla put (it only pays off on the
+subset of paths that touch the barrier), the note gives away a cheaper option than the plain
+Reverse Convertible, financing a **smaller** coupon for the same strike - verified numerically at
+runtime (three independent checks: in-out parity, convergence to the closed form, and collapse to
+a pure ZCB as the barrier is pushed unreachable). Greeks are finite-difference (barrier-option
+Greeks are messy near the barrier), with wider bump sizes than the closed-form products - a CRR
+lattice rebuilt on every call has discrete "sawtooth" artifacts a small bump can land inside of.
 
-**In-out parity still holds** — a path either touches the barrier or it never does, and these two
-mutually exclusive/exhaustive outcomes must reconstruct an ordinary vanilla put:
-
-$$p_{vanilla}(K) = p_{di}(K, H) + p_{do}(K, H)$$
-
-This is checked numerically (both legs priced on the same CRR lattice, same step count) rather
-than relied on as a derivation shortcut, since the lattice computes each side independently
-instead of one being defined as "vanilla minus the other."
-
-**Once the barrier HAS been touched**, the down-and-in put has permanently "knocked in" and from
-that point on it is priced as an **ordinary vanilla put** (plain Black-Scholes, no lattice needed)
-— it is no longer barrier-contingent at all. This is the mirror image of the down-and-out case
-(which goes to exactly 0 forever once knocked out): here, breaching the barrier makes the note's
-future MTM identical to the plain Reverse Convertible's, not to a pure bond's.
-
-**Sanity checks run on this script** (see `verify_against_closed_form` in
-`Barrier Reverse Convertible.py`):
-- **In-out parity itself**: `down_and_in + down_and_out` (both CRR, same step count) matches the
-  vanilla put price to numerical precision.
-- **Convergence to the continuous-monitoring closed form**: as the CRR step count is pushed much
-  higher (2,000 steps) than the realistic daily step count actually used for pricing, the
-  down-and-in price converges onto QuantLib's `AnalyticBarrierEngine` (the same
-  Reiner-Rubinstein/reflection-principle closed form used elsewhere in this repo) — confirming the
-  lattice itself is wired correctly, even though the live pricer deliberately does *not* use that
-  continuous limit as the actual price.
-- **Barrier pushed unreachable (`H → 0`)**: the down-and-in put can never activate, so it must be
-  worth exactly 0, and the note's price must collapse to a **pure zero-coupon bond** (no put
-  subtracted at all) — confirmed to match to numerical precision. Note this is a *different*
-  limit than the down-and-out case would give (which collapses to the plain Reverse Convertible,
-  not a pure ZCB) — the two barrier types behave oppositely as the barrier becomes unreachable.
-- With `STRIKE=90%` and `BARRIER=70%`, the (un-breached) Barrier Reverse Convertible prices
-  *above* the plain Reverse Convertible at the same strike — consistent with it financing a
-  smaller coupon, as described above.
-
-**Greeks** are computed by **finite-difference bump-and-reprice** on the full note price (not by
-differentiating the barrier formula further) — barrier-option Greeks are notoriously messy near
-the barrier (a finite-difference bump straddling the barrier mixes the "not yet touched" price
-with the "already knocked in" price), so a numerical bump is simpler and more robust than an
-exact derivative, same approach as `Bonus-Outperfomance`. The Greeks ladder script's chart shows
-a small kink in Delta/Vega in the spot scenarios immediately around the barrier; that reflects
-the discontinuity being sampled, not a bug.
-
-The Delta/Vega bump sizes (2% of spot / 2 vol points) are much wider than the "0.1% of spot"
-convention used for the closed-form products in this repo. A CRR lattice is rebuilt from scratch
-on every pricing call, and its node grid scales multiplicatively with both spot and vol, so a
-small bump can land entirely inside a discrete "sawtooth" lattice artifact and return a Greek off
-by a large factor - not a smooth local sensitivity at all. See the `Bullish Sharkfin` product's
-README (`Product MtM/Capital Protection/`) for the specific bump-size scan that surfaced this and
-the full rationale for the wider bumps used here.
+**See `MATHEMATICS.md` in this folder for the full lattice mechanics, the in-out parity identity,
+and all three verification checks worked out in formulas.**
 
 ## Discounting: two different rates for two different risks
 
@@ -194,10 +148,13 @@ continuous-monitoring assumption.
 
 ## Volatility
 
-Same approach as the other products in this repo: SPX implied vol interpolated from the
-VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity (not a flat
-number, and not the raw 30-day VIX applied to a much longer holding period). See the
-`Product MtM/Participation/Outperformance/` folder's README for the full rationale and the known limitation beyond 182 days
+Same approach as the other products in this repo: for an index, SPX implied vol interpolated
+from the VIX / VIX3M / VIX6M term structure for each day's actual remaining time-to-maturity (not
+a flat number, and not the raw 30-day VIX applied to a much longer holding period); for a
+single-name stock, that ticker's own trailing 2-year realized volatility (held flat, since no
+free historical implied-vol source exists for an arbitrary stock the way VIX serves the index).
+See the `Product MtM/Participation/Outperformance/` folder's README for the full rationale on
+both, and the known limitation beyond 182 days
 (VIX6M held flat, since there's no free historical source for a longer-dated implied vol).
 
 ## Output
@@ -205,11 +162,12 @@ number, and not the raw 30-day VIX applied to a much longer holding period). See
 Running `Barrier Reverse Convertible.py` prints the resolved underlying name and dividend yield,
 entry/maturity levels, realized returns, whether the barrier was actually touched in this
 historical path, the in-out-parity, closed-form-convergence, and unreachable-limit verification
-checks, the note's fair value at inception (as % of par), and its Greeks — then saves a chart
-with the underlying's price and note payoff on the left axis and the note's fair value on its own
-right-hand axis, with dotted lines marking the strike (blue) and barrier (green), and — if the
-barrier was touched in this path — a vertical dashed green line at the knock-in date. Every label
-(legend, axis, chart title) uses the resolved underlying name, not a hardcoded "S&P 500".
+checks, the note's model value of the redemption component at inception (as % of par, excluding
+coupons), and its Greeks — then saves a chart with the underlying's price and note payoff on the
+left axis and the model value on its own right-hand axis, with dotted lines marking the strike
+(blue) and barrier (green), and — if the barrier was touched in this path — a vertical dashed
+green line at the knock-in date. Every label (legend, axis, chart title) uses the resolved
+underlying name, not a hardcoded "S&P 500".
 
 Running `Greek Sensitivity.py` prints and charts the Greeks ladder: strike, barrier, tenor, vol
 and the funding curve held fixed, only spot varies, so each Greek's value at a given spot level
@@ -221,17 +179,18 @@ spot.
 ### `Barrier Reverse Convertible.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to today's level, flat at 0% unless the barrier has *already* been touched in this path
   AND today's level is below the strike (see the down-and-in payoff logic above) - it can stay
   flat even well below the strike, right up until the moment the barrier is actually touched.
-  This is **not** what you'd actually receive if the note were sold or unwound today - see the
-  MTM line for the actual fair-value estimate.
+  This is an illustration of the payoff formula, **not** what you'd actually receive if the note
+  were sold or unwound today - see the model-value line for the estimate that accounts for
+  remaining time value.
 - **Left axis, dotted lines** — blue marks the strike, green marks the barrier; a dashed green
   vertical line (with a "Barrier Knocked In" label) marks the date the barrier was actually
   touched, if it was, in this historical path.
-- **Right axis, solid darkred line** — the note's fair value (% of par), converging onto the
-  tracker line exactly at maturity.
+- **Right axis, solid darkred line** — the model value of the redemption component (% of par,
+  excludes coupons), converging onto the tracker line exactly at maturity.
 
 ### `Greek Sensitivity.png` (the Greeks ladder)
 
@@ -242,8 +201,9 @@ genuinely discontinuous right at the barrier - you'll see a visible kink in Delt
 or two spot scenarios immediately around the 70% barrier line; that's the real discontinuity
 being sampled by the bump, not a plotting bug.
 
-- **Price (% of Par)**: fair value at that spot level, assuming the barrier hasn't been touched
-  yet (except at/below the barrier itself, where it necessarily has been).
+- **Price (% of Par)**: model value of the redemption component at that spot level, assuming the
+  barrier hasn't been touched yet (except at/below the barrier itself, where it necessarily has
+  been).
 - **Delta**: points of note value per 1-point index move, right now, at that spot.
 - **Vega (per 1% change in vol)**: percentage points of par per 1-percentage-point vol move.
   **Not a fixed number** - recomputed at every spot level; note it can be small or even flip
@@ -252,7 +212,7 @@ being sampled by the bump, not a plotting bug.
   value of the put once it's live - which effect wins depends on exactly where spot sits.
 - **Rho (per 1% change in SOFR)**: percentage points of par per 1-percentage-point rate move.
   Worked example: a reading of **≈ -0.0081 at spot=100%** means "if SOFR rose from 4% to 5%
-  right now, index unchanged, barrier not yet touched, the note's fair value would fall by about
+  right now, index unchanged, barrier not yet touched, the note's model value would fall by about
   0.81 percentage points of par" - roughly $8.10 on a $1,000-par note. Negative for the same
   reason as the plain Reverse Convertible: the ZCB leg's bond-duration effect dominates the
   smaller offsetting rho from the short (barrier-contingent) put.
@@ -267,3 +227,10 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure. This product in particular excludes coupon valuation
+entirely - see the scope note at the top of this file.

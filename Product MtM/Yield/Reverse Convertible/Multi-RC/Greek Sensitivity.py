@@ -7,6 +7,22 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    _quantlib_process,
+    zcb_price_and_greeks,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
@@ -24,72 +40,9 @@ CORRELATION_LOOKBACK_YEARS = 2
 N_MC_PATHS = 50000
 MC_SEED = 42
 
-# T, strike and the funding curve are fixed constants throughout this whole
-# analysis - the only thing that varies below is a COMMON multiplicative
-# shock applied to every name in the basket AT ONCE (see the README for why
-# this, rather than bumping one name at a time, is the natural x-axis for a
-# multi-asset product's Greeks ladder). Vol/correlation/dividend yields are
-# held at their (real, trailing-window-estimated) entry values throughout.
+# x-axis is a COMMON multiplicative shock applied to every name at once - see
+# README for why. T, strike, funding curve, vol/correlation/dividends fixed.
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
-
-
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q. See the
-    README in this folder and the single-name RC's README (one folder up)
-    for the full rationale and field-selection notes."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
 
 
 def fetch_multi_asset_path(tickers, start, end):
@@ -106,24 +59,6 @@ def estimate_vols_and_correlation(calibration_price_df):
     vols = log_returns.std() * np.sqrt(252)
     corr = log_returns.corr()
     return vols.to_dict(), corr
-
-
-def zcb_price_and_greeks(principal, T_remaining, funding_rate):
-    discount = (1 + funding_rate) ** T_remaining
-    price = principal / discount
-    rho = -T_remaining * price / (1 + funding_rate)
-    theta = price * np.log(1 + funding_rate)
-    return {"price": price, "rho": rho, "theta": theta}
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
 
 
 def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths=N_MC_PATHS, seed=MC_SEED):
@@ -145,7 +80,7 @@ def worst_of_put_price(relative_spots, K, T, r, sigmas, qs, corr_matrix, n_paths
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     basket_payoff = ql.MinBasketPayoff(payoff)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     option = ql.BasketOption(basket_payoff, exercise)
 
@@ -169,26 +104,10 @@ def multi_rc_price(relative_spots, T_remaining, sigmas, qs, corr_matrix, r=RISK_
     return {"price": zcb["price"] - put_quantity * put_price}
 
 
-# ---------------------------------------------------------------------------
-# GREEKS LADDER
-#
-# T, strike, funding curve, vol, correlation and dividend yields are all
-# held constant throughout - the only thing that varies across rows is a
-# COMMON multiplicative shock applied to every name's relative-performance
-# spot AT ONCE (e.g. row "80%" = every name in the basket is simultaneously
-# 20% below its own entry level). This is the natural x-axis for a
-# multi-asset product: a per-name x-axis would need N separate ladders (one
-# holding the other N-1 names fixed), which doesn't compose into a single
-# chart the way a shared "market-wide move" scenario does, and it's also
-# the more economically meaningful scenario to stress-test a worst-of note
-# against (a broad selloff, not one name idiosyncratically diverging).
-#
-# Delta and Vega are reported PER NAME (one line per basket member on those
-# two panels) - a multi-asset product's risk is a genuine vector, not a
-# scalar. Rho stays a single shared-rate line, same as every other product.
-# Theta is excluded, same fixed-tenor reasoning as every other Greeks
-# ladder in this repo.
-# ---------------------------------------------------------------------------
+# GREEKS LADDER: x-axis is a common multiplicative shock applied to every
+# name at once (e.g. "80%" = every name 20% below its own entry level) -
+# the natural x-axis for a multi-asset product, see README for why. Delta/
+# Vega per name, Rho a single shared line, Theta excluded.
 
 def greek_sensitivity_table(T, sigmas, qs, corr_matrix, tickers, r=RISK_FREE_RATE,
                              spot_multiples=SPOT_SCENARIO_RANGE, n_paths=N_MC_PATHS, seed=MC_SEED):
@@ -239,7 +158,7 @@ def plot_greek_sensitivity(table, tickers, T, r, underlying_names):
     ax.axvline(STRIKE * 100, color="dodgerblue", linewidth=0.8, linestyle="dotted")
     ax.set_title("Price (% of Par)")
     ax.set_xlabel("Spot (% of S0, all names shocked together)")
-    ax.set_ylabel("Fair Value (% of Par)")
+    ax.set_ylabel("Model Value of Redemption Component (% of Par)")
     ax.grid(True, color="lightgrey", linewidth=0.4)
 
     ax = axes[0, 1]

@@ -7,10 +7,33 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    interpolate_implied_vol,
+    fetch_trailing_realized_vol,
+    _quantlib_process,
+    zcb_price_and_greeks,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
-# --- Same product terms as "Barrier Reverse Convertible.py" in this folder ---
+# --- Reference product terms for this Greeks ladder - NOT synced to
+# "Barrier Reverse Convertible.py" in this folder. The main script's
+# STRIKE/BARRIER/TICKER are meant to be changed freely to backtest
+# different names; this ladder intentionally stays on the generic
+# reference terms below (see README) so it profiles the templated note,
+# not whatever one-off name the main script currently points at. ---
 STRIKE = 0.90
 BARRIER = 0.70
 RISK_FREE_RATE = 0.04
@@ -25,72 +48,9 @@ FRED_SERIES = "SP500"
 VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
 VIX_FRED_SERIES = "VIXCLS"
 
-# T (TENOR), strike, barrier and the funding curve are fixed constants
-# throughout this whole analysis - the only thing that varies below is
-# spot. Vol is also held at its inception value for every row. Spot never
-# goes low enough to already be "breached" in this ladder (the whole point
-# is to see the un-breached Greeks profile) - see the main backtest script
-# for what happens once the barrier is actually touched.
+# This ladder spans 60%-140% of S0, which crosses BARRIER - both the
+# un-breached and breached regimes are covered (see breached branch below).
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
-
-
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q. Indices
-    ("^" tickers) are treated as paying none. See the README in this
-    folder for the full rationale and field-selection notes."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
 
 
 def fetch_index_path(entry_date, years=TENOR):
@@ -118,31 +78,6 @@ def fetch_vol_term_structure(entry_date, years=TENOR):
     return term_structure
 
 
-def interpolate_implied_vol(vols_by_tenor, T_years):
-    points = sorted(vols_by_tenor.items())
-
-    if T_years <= points[0][0]:
-        return points[0][1]
-    if T_years >= points[-1][0]:
-        return points[-1][1]
-
-    for (t0, v0), (t1, v1) in zip(points, points[1:]):
-        if t0 <= T_years <= t1:
-            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
-            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
-            return np.sqrt(var_T / T_years)
-
-    return points[-1][1]
-
-
-def zcb_price_and_greeks(principal, T_remaining, funding_rate):
-    discount = (1 + funding_rate) ** T_remaining
-    price = principal / discount
-    rho = -T_remaining * price / (1 + funding_rate)
-    theta = price * np.log(1 + funding_rate)
-    return {"price": price, "rho": rho, "theta": theta}
-
-
 def black_scholes_put(S, K, T, r, sigma, q=0.0):
     """Plain (no barrier) European put via QuantLib's AnalyticEuropeanEngine
     (dividend yield q is a native input) - used as the base for in-out
@@ -154,7 +89,7 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -162,26 +97,9 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
     return {"price": option.NPV()}
 
 
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
 def down_and_in_put_crr(S, K, H, T, r, sigma, steps, q=0.0):
-    """
-    Down-and-in put on a Cox-Ross-Rubinstein binomial lattice (QuantLib
-    BinomialCRRBarrierEngine), barrier checked once per step. See
-    "Barrier Reverse Convertible.py" in this folder for why this replaced
-    the closed-form (continuous-monitoring) reflection-principle formula -
-    the monitoring frequency here should match how often the note's price
-    is actually ever observed (once per trading day), not true continuous
-    monitoring, which overstates the touch probability.
-    """
+    """CRR binomial lattice down-and-in put - see ../MATHEMATICS.md for
+    why, over the continuous-monitoring closed form."""
     if T <= 0:
         return max(K - S, 0.0) if S <= H else 0.0
     if S <= H:
@@ -191,7 +109,7 @@ def down_and_in_put_crr(S, K, H, T, r, sigma, steps, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.BarrierOption(ql.Barrier.DownIn, H, 0.0, payoff, exercise)
@@ -203,14 +121,8 @@ def down_and_in_put_crr(S, K, H, T, r, sigma, steps, q=0.0):
 
 def barrier_reverse_convertible_price(S, S0, T_remaining, sigma, breached, r=RISK_FREE_RATE,
                                        credit_spread=GS_CDS_SPREAD, steps=None, q=0.0):
-    """
-    Once breached=True, the down-and-in put has permanently knocked in and
-    is priced as an ordinary vanilla put from then on.
-
-    `steps` is the CRR lattice's step count (one barrier check per step);
-    defaults to an approximate 252-trading-day year if omitted. `q` is the
-    underlying's dividend yield (0 for an index).
-    """
+    """Full note price - once breached, priced as an ordinary vanilla
+    put (see ../MATHEMATICS.md section 4)."""
     zcb = zcb_price_and_greeks(S0, T_remaining, r + credit_spread)
     K = STRIKE * S0
 
@@ -225,37 +137,13 @@ def barrier_reverse_convertible_price(S, S0, T_remaining, sigma, breached, r=RIS
     return zcb["price"] - put_quantity * put_price
 
 
-# ---------------------------------------------------------------------------
-# GREEKS LADDER
-#
-# T, strike, barrier and the funding curve are held constant throughout -
-# the ONLY thing that varies across rows is spot. Vol is also pinned at its
-# inception value for every row. Each Greek at a given spot level IS the
-# answer to "how much does MTM move for a 1-unit change in that variable,
-# right now, at this spot" - same design as every other product in this
-# repo.
-#
-# Greeks are bump-and-reprice finite differences on the full note price
-# (not by differentiating the barrier formula further) - barrier-option
-# Greeks are notoriously messy near the barrier (delta in particular can be
-# discontinuous there), so a numerical bump is simpler and more robust,
-# same approach as the Bonus-Outperformance certificate.
-# ---------------------------------------------------------------------------
+# GREEKS LADDER: T, strike, barrier and funding curve fixed; only spot
+# varies. Bump-and-reprice finite differences (barrier Greeks are messy
+# near the barrier). See README and ../MATHEMATICS.md section 6.
 
 def finite_difference_greeks_at(S, S0, T, sigma, breached, r=RISK_FREE_RATE, credit_spread=GS_CDS_SPREAD, steps=None, q=0.0):
-    """
-    The CRR step count is fixed ONCE (from the un-bumped T) and reused for
-    every bumped evaluation, so a differing step count between bumps never
-    injects lattice-discreteness noise into the Greek.
-
-    bump_S and bump_sigma are wide by finite-difference convention - a CRR
-    lattice's node grid scales multiplicatively with both S and sigma, so a
-    small bump can land inside a "sawtooth" discretization jump and return
-    a Greek off by an order of magnitude. See the Bullish Sharkfin
-    product's README (Product MtM/Capital Protection/) for the bump-size
-    scan that surfaced this. Rho keeps a small bump since r doesn't enter
-    the lattice's node spacing.
-    """
+    """Wide bumps (CRR lattice sawtooth artifacts) - see
+    ../MATHEMATICS.md section 6."""
     bump_S, bump_sigma, bump_r = S0 * 0.02, 0.02, 0.0001
     n = steps if steps is not None else max(round(T * 252), 1)
 
@@ -298,7 +186,7 @@ def plot_greek_sensitivity(table, S0, T, sigma, r, underlying_name):
     spot = table["Spot (% of S0)"]
 
     panels = [
-        ("Price (% of Par)", "Fair Value (% of Par)", "firebrick"),
+        ("Price (% of Par)", "Model Value of Redemption Component (% of Par)", "firebrick"),
         ("Delta", "Delta", "darkred"),
         ("Vega (per 1% vol)", "Vega (per 1% change in vol)", "indianred"),
         ("Rho (per 1% rate)", "Rho (per 1% change in SOFR)", "brown"),
@@ -330,7 +218,9 @@ if __name__ == "__main__":
     print("Greeks Ladder - Barrier Reverse Convertible")
     print("=" * 60)
     print("This is NOT a new backtest and does not use the historical path.")
-    print("It reuses the same entry conditions as the main backtest script,")
+    print("It uses this ladder's own reference entry conditions (see the header")
+    print("comment above), not whatever ticker/terms the main backtest script")
+    print("currently has set,")
     print("then holds T, strike, barrier, funding curve and vol all fixed and")
     print("varies ONLY spot, so each Greek's value at a given spot level tells")
     print("you directly how much MTM moves for a 1-unit change in that")
@@ -345,10 +235,18 @@ if __name__ == "__main__":
 
     dividend_yield = fetch_dividend_yield(TICKER)
 
-    print(f"Fetching SPX implied vol term structure for {ENTRY_DATE}...")
-    raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
-    vols_at_entry = {tenor: series.iloc[0] for tenor, series in raw_term_structure.items()}
-    entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+    if TICKER.startswith("^"):
+        print(f"Fetching SPX implied vol term structure for {ENTRY_DATE}...")
+        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        vols_at_entry = {tenor: series.iloc[0] for tenor, series in raw_term_structure.items()}
+        entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+        vol_source_desc = f"the VIX/VIX3M/VIX6M term structure on {ENTRY_DATE}"
+    else:
+        print(f"{TICKER} is a single name - using its own trailing 2y realized volatility instead of")
+        print(f"the SPX VIX/VIX3M/VIX6M proxy:")
+        entry_vol = fetch_trailing_realized_vol(TICKER, ENTRY_DATE)
+        vol_source_desc = f"{TICKER}'s own trailing 2y realized vol (not VIX-derived)"
+        print(f"  {entry_vol:.2%}")
 
     print(f"\nFixed throughout (only spot varies below):")
     print(f"  Underlying:      {underlying_name} ({TICKER})")
@@ -357,7 +255,7 @@ if __name__ == "__main__":
     print(f"  Strike:          {STRIKE:.0%} of S0")
     print(f"  Barrier:         {BARRIER:.0%} of S0 (knock-in, CRR lattice, checked once per trading day)")
     print(f"  Tenor (T):       {TENOR} year(s)")
-    print(f"  Vol (sigma):     {entry_vol:.2%}  (from the VIX/VIX3M/VIX6M term structure on {ENTRY_DATE})")
+    print(f"  Vol (sigma):     {entry_vol:.2%}  (from {vol_source_desc})")
     print(f"  SOFR proxy:      {RISK_FREE_RATE:.2%}")
     print(f"  GS CDS spread:   {GS_CDS_SPREAD:.2%}")
     print(f"  Dividend yield:  {dividend_yield:.2%}  (flat, continuous - 0% if an index)")

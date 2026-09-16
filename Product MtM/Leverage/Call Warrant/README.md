@@ -7,6 +7,12 @@ any single-name stock or index ticker works - see "Underlying selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 The simplest product in this repo. Every other product here is built around a zero-coupon bond
 or LEPO leg — some kind of principal/par being returned at maturity. A warrant has none of that:
 it's **not a debt instrument**, prepackaged or otherwise. You pay a premium, you own a call, and
@@ -73,7 +79,7 @@ product instead reports price and Greeks in the units a standard option pricing 
 - **Theta** — per year (and per day, in the printed summary).
 
 The chart's left axis still shows the underlying's own return in % (matching every other product
-in this repo), but the right axis (the warrant's intrinsic value and MTM fair value) is in raw
+in this repo), but the right axis (the warrant's intrinsic value and model value) is in raw
 price units on its **own independent scale** — it is deliberately *not* forced to share y-limits
 with the left axis, since the warrant's value and the underlying's own price live on genuinely
 different scales and unifying them would flatten the warrant line into invisibility.
@@ -96,7 +102,7 @@ Running `Call Warrant.py` prints the resolved underlying name and dividend yield
 levels, realized returns, the warrant's premium and Greeks at inception, and its effective
 gearing (how much the warrant's value moves, in % of premium paid, for a 1% move in the
 underlying) — then saves a chart with the underlying's price return on the left axis and the
-warrant's intrinsic value / fair value in raw price units on its own right-hand axis, with a
+warrant's intrinsic value / model value in raw price units on its own right-hand axis, with a
 dotted blue line marking the strike.
 
 Running `Greek Sensitivity.py` prints and charts the Greeks ladder: strike, tenor, vol and rate
@@ -111,8 +117,8 @@ held fixed, only spot varies.
 - **Right axis, dashed indianred line** — the warrant's intrinsic value if exercised today,
   `max(S - Strike, 0)`, in raw underlying price units. This is **not** what you'd actually
   receive if the warrant were sold today - it ignores all remaining time value. See the MTM line
-  for the actual fair-value estimate.
-- **Right axis, solid darkred line** — the warrant's fair value (raw price units), converging
+  for the model-value estimate.
+- **Right axis, solid darkred line** — the warrant's model value (raw price units), converging
   onto the intrinsic value line exactly at maturity.
 
 ### `Greek Sensitivity.png` (the Greeks ladder)
@@ -137,3 +143,8 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

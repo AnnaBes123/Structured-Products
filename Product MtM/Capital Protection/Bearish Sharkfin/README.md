@@ -10,6 +10,12 @@ selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 This is the mirror image of the `Bullish Sharkfin` product in this same folder: same ZCB +
 barrier-option architecture, flipped onto the downside - a long put instead of a long call, a
 barrier below the strike instead of above it. Read that product's README first if this is your
@@ -54,6 +60,9 @@ priced this way, not just the up-barrier case.
 rebate forced to 0, the down-and-out put can never knock out, so its CRR price should converge
 onto the plain vanilla put struck at `STRIKE` - confirms the barrier engine collapses to the
 ordinary closed form in the no-barrier limit.
+
+See `Product MtM/Yield/Barrier Reverse Convertible/MATHEMATICS.md` for the full CRR lattice
+mechanics (same engine, just a down-and-out put here instead of down-and-in).
 
 ## Underlying selection: stocks (with dividends) vs. indices (no dividends)
 
@@ -114,9 +123,9 @@ actual number of remaining trading days as the CRR lattice's step count for each
 
 Running `Bearish Sharkfin.py` prints the resolved underlying name and dividend yield,
 entry/maturity levels, realized returns, whether the barrier was actually touched in this
-historical path, the closed-form verification check, the note's fair value at inception (as % of
+historical path, the closed-form verification check, the note's model value at inception (as % of
 par), and its Greeks — then saves a chart with the underlying's price and note payoff on the left
-axis and the note's fair value on its own right-hand axis, with dotted lines marking the strike
+axis and the note's model value on its own right-hand axis, with dotted lines marking the strike
 (blue) and barrier (green), and — if the barrier was touched in this path — a vertical dashed
 green line at the knock-out date.
 
@@ -128,16 +137,16 @@ and the funding curve held fixed, only spot varies.
 ### `Bearish Sharkfin.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to each day's spot (flat at 0% above the strike, rising 1:1 as the index falls below it,
   as long as never breached). This is **not** what you'd actually receive if the note were sold
   or unwound on that date - it ignores all remaining time value in the still-live put. It's the
   closest thing to a running "how much downside has this path locked in so far" readout, not a
-  settlement value - see the right-axis MTM line for the actual fair-value estimate.
+  settlement value - see the right-axis MTM line for the model-value estimate.
 - **Left axis, dotted lines** — blue marks the strike, green marks the barrier; a dashed green
   vertical line (with a "Barrier Knocked Out" label) marks the date the barrier was actually
   touched, if it was, in this historical path.
-- **Right axis, solid darkred line** — the note's fair value (% of par), converging onto the
+- **Right axis, solid darkred line** — the note's model value (% of par), converging onto the
   tracker line exactly at maturity (an option's time value is 0 at expiry, so the two are
   identical by then).
 
@@ -172,3 +181,8 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

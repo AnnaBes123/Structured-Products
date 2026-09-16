@@ -11,6 +11,12 @@ selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 Structurally close to the `Bonus Certificate` in this same folder (same LEPO + down-and-out put
 architecture), but with two differences: the put quantity here is **2x**, not 1x, and there is
 **no cap**. Those two changes are what turn a "bonus/floor" payoff into a genuine "twin win"
@@ -130,9 +136,9 @@ the actual number of remaining trading days as the CRR lattice's step count for 
 
 Running `Twin-Win Certificate.py` prints the resolved underlying name and dividend yield,
 entry/maturity levels, realized returns, whether the barrier was actually touched in this
-historical path, the closed-form verification check, the certificate's fair value at inception
+historical path, the closed-form verification check, the certificate's model value at inception
 (as % of par), and its Greeks — then saves a chart with the underlying's price and certificate
-payoff on the left axis and the certificate's fair value on its own right-hand axis, with dotted
+payoff on the left axis and the certificate's model value on its own right-hand axis, with dotted
 lines marking the strike (blue) and barrier (green), and — if the barrier was touched in this
 path — a vertical dashed green line at the knock-out date.
 
@@ -145,17 +151,17 @@ and the risk-free rate held fixed, only spot varies, shown for both barrier stat
 ### `Twin-Win Certificate.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to each day's spot. This is **not** what you'd actually receive if the certificate were
   sold or unwound on that date - it ignores all remaining time value in the still-live puts. See
-  the right-axis MTM line for the actual fair-value estimate. Above the strike (never breached)
+  the right-axis MTM line for the model-value estimate. Above the strike (never breached)
   it tracks the index 1:1; below it (never breached) it mirrors the index's loss into an
   equal-and-opposite gain; once breached, it collapses onto the index's own return line exactly
   (the certificate is just the LEPO at that point).
 - **Left axis, dotted lines** — blue marks the strike, green marks the barrier; a dashed green
   vertical line (with a "Barrier Knocked Out" label) marks the date the barrier was actually
   touched, if it was, in this historical path.
-- **Right axis, solid darkred line** — the certificate's fair value (% of par), converging onto
+- **Right axis, solid darkred line** — the certificate's model value (% of par), converging onto
   the tracker line exactly at maturity.
 
 ### `Greek Sensitivity.png` (the Greeks ladder)
@@ -192,3 +198,8 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

@@ -8,6 +8,12 @@ today's spot. Defaults to `DEPOSIT_CCY = "USD"` / `ALT_CCY = "EUR"`, but any lis
 This is a **deterministic historical approximation** — real historical FX prices, no simulation or
 Monte Carlo (same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 Mechanically this is the **same structure as the Reverse Convertible** (sibling folder under
 `Yield/`), with the alternate currency playing the role of "the stock" and Garman-Kohlhagen (the
 FX version of Black-Scholes-Merton) replacing the equity option model. If you understand the RC,
@@ -136,10 +142,16 @@ Same structure as the Reverse Convertible:
 
 ## Output
 
-Running `DCI.py` prints the entry/maturity spot levels, realized FX return, the note's return, the
-note's fair value at inception (as % of par), and its Greeks - then saves a chart with the FX
-spot path and note payoff on the left axis and the note's fair value on its own right-hand axis,
-with a dotted line marking the strike.
+Running `DCI.py` prints the entry/maturity spot levels, realized FX return, the note's redemption
+payoff, the model value at inception (as % of par), and its Greeks - then saves a chart.
+
+## Reading the chart
+
+- **Left axis, firebrick line** — the raw FX rate **level** (DEPOSIT per 1 ALT unit), not a %
+  return - an exchange rate isn't a return the way a stock price is, even though a % change looks
+  similar. A dotted blue line marks the strike level.
+- **Right axis** — the note's own figures, both genuinely "return"-like so they share an axis: the
+  dashed Redemption Payoff (Relative to Par) tracker, and the solid model value (% of par).
 
 ## Usage
 
@@ -157,3 +169,15 @@ python3 "Greek Sensitivity.py"
 Data comes from `yfinance` (Yahoo Finance) - FX tickers are constructed as `f"{ALT_CCY}{DEPOSIT_CCY}=X"`
 (verified empirically: Yahoo's `"{CCY1}{CCY2}=X"` convention returns units of `CCY2` per 1
 `CCY1`, so this always returns `S` in the DEPOSIT-per-1-ALT convention this file uses throughout).
+
+## The maths
+
+`MATHEMATICS.md` in this folder has the Garman-Kohlhagen formula and the full price/payoff
+worked out - building on `../Fixed Coupon Note/MATHEMATICS.md` for the shared ZCB/conversion-ratio
+derivation.
+
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

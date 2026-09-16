@@ -9,6 +9,12 @@ single-name stock or index ticker works - see "Underlying selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo (the
 same style as the plain `Outperformance` certificate's historical approximation in the sibling folder).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 ## Structure
 
 Take the outperformance certificate replication (1× zero-strike call + (participation − 1)×
@@ -60,6 +66,13 @@ useful reminder that barrier-option algebra is easy to get subtly wrong, and par
 script now leans on QuantLib (an independently-tested, industry-standard library) rather than
 further hand-rolled formulas, including for the dividend extension below.
 
+**Sanity check** (`verify_against_closed_form` in `Bonus-Outperfomance Certificate.py`): with the
+barrier pushed unreachable (`H → 0`), the down-and-out put can never knock out, so its CRR price
+should converge onto the plain vanilla put struck at `STRIKE` — confirms the barrier engine
+collapses to the ordinary closed form in the no-barrier limit. Printed at runtime as a PASS/FAIL
+line with the relative difference between the two prices - read it before trusting a given run's
+output.
+
 **Greeks** are computed by **finite-difference bump-and-reprice** (central differences on the
 full certificate price) rather than by differentiating the barrier pricing further —
 barrier-option Greeks are notoriously messy near the barrier (delta in particular can be
@@ -107,11 +120,13 @@ date, so the forward-looking pricing matches the barrier's real observation freq
 
 Running the script prints the resolved underlying name and dividend yield, the same summary as
 the plain Outperformance historical approximation (entry/maturity levels, return, certificate return, realized
-vol, max drawdown, barrier level), the certificate's fair value at inception, and its Greeks —
+vol, max drawdown, barrier level), the closed-form verification check, the certificate's model
+value at inception, and its Greeks —
 then saves a chart with the underlying's price and certificate payoff on the left axis and the
-certificate's fair value (as % of par) on its own right-hand axis, with a dotted grey line
-marking the barrier level. Every label (legend, axis, chart title) uses the resolved underlying
-name, not a hardcoded "S&P 500".
+certificate's model value (as % of par) on its own right-hand axis, with a dotted dodgerblue line
+marking the knock-out barrier level (and, if the barrier was touched in this path, a dashed
+vertical line marking the knock-out date). Every label (legend, axis, chart title) uses the
+resolved underlying name, not a hardcoded "S&P 500".
 
 ## Reading the charts
 
@@ -122,10 +137,14 @@ name, not a hardcoded "S&P 500".
   terminal formula applied to today's level, ignoring time value). This line kinks at the
   strike (leveraged above it, 1:1 below) and would jump if the barrier were ever touched — the
   dotted blue line marks the knock-in barrier level.
-- **Right axis, solid darkred line** — the certificate's actual fair value (% of
+- **Right axis, solid darkred line** — the certificate's actual model value (% of
   par) each day, including time value. It converges onto the dashed line exactly at maturity
   (an option's time value is 0 at expiry), and sits *above or below* it beforehand depending on
-  how much time value the embedded put still carries.
+  how much time value the embedded put still carries. Indexed to **par (S0)**, not the
+  certificate's own day-1 model value — this is what makes it converge exactly onto the payoff
+  line's percentage at maturity (real-dollar terms match at expiry); the tradeoff is that the
+  line starts *above* 0% on day 1, reflecting the real option premium the participation rate and
+  put protection actually cost at that vol (see the console printout for that number directly).
 - The Greeks box (top right) reports Delta/Vega/Rho/Theta **at inception only** (day 1) — it
   does not update day by day. Use the Greeks ladder chart below for how these change with spot.
 
@@ -138,7 +157,7 @@ panel — spot is the only thing that moves. Each panel is plotted **twice** —
 touched) — because the barrier changes every Greek's value meaningfully; below the barrier
 itself only "Breached" is shown, since you cannot be below the barrier without having touched it.
 
-- **Price (% of Par)**: the certificate's fair value at that spot level. Reading a point: "if
+- **Price (% of Par)**: the certificate's model value at that spot level. Reading a point: "if
   spot were at 80% of S0 today (and never breached), the certificate would be worth X% of par."
 - **Delta**: how many *points* of certificate value move for a 1-point move in the index, right
   now, at that spot. A Delta of 1.5 at spot=120% means a further 1-point rise in the index adds
@@ -151,7 +170,7 @@ itself only "Breached" is shown, since you cannot be below the barrier without h
 - **Rho (per 1% change in rates)**: how many percentage points of par the certificate's value
   moves for a 1-percentage-point move in the risk-free rate (e.g. SOFR 4% → 5%), at that spot.
   Worked example: a reading of **-0.008 at spot=100%** means "if SOFR rose from 4% to 5% right
-  now, with the index unchanged at its entry level, the certificate's fair value would fall by
+  now, with the index unchanged at its entry level, the certificate's model value would fall by
   about 0.8 percentage points of par" — e.g. roughly $8 on a $1,000-par certificate. It's small
   and can be either sign here because the certificate nets a *long* call-heavy position (positive
   rho, since higher rates raise a call's forward value) against a *long* put (negative rho) -
@@ -166,3 +185,8 @@ python3 "Bonus-Outperfomance Certificate.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.

@@ -1,0 +1,51 @@
+# Structured Products
+
+A personal, **AI-assisted learning project** about structured-product valuation and naive probability modeling. I selected the products, chose the structure, and steered the direction throughout; [Claude Code](https://claude.com/claude-code) generated the implementation under my direction. I'm still learning this material and still working through the fundamental understanding — coupon valuation/pricing in particular is explicitly out of scope (see below) rather than approximated — so treat everything here as a work in progress under review, not a validated pricing library, and not investment research.
+
+## Two different questions, two different folders
+
+This repo asks two genuinely different questions about the same kind of underlyings, and it's
+important not to blur them:
+
+- **`Product MtM/`** — *"What is this product's payoff worth today, under risk-neutral pricing
+  assumptions?"* Historical mark-to-market illustrations for ~15 structured products (may have more) (capital protection, leverage, participation, and yield/income structures), each replicated as an option portfolio and priced with QuantLib, a CRR lattice, or Monte Carlo along one real historical price path. **Start with [`Product MtM/README.md`](Product%20MtM/README.md)** — it covers the shared terminology ("Model Value" vs. "Redemption Payoff Relative to Par"), what's modeled vs. excluded (coupons, for the yield products), and a full scope-and-limitations section (vol proxies, flat rates, credit spread, dividend treatment, monitoring approximation, numerical
+  limitations).
+- **`Estimators/`** — *"What's the actual (real-world) likelihood this happens?"* A physical-measure
+  probability estimator (currently: `FCN Probability Estimator`, including its worst-of/Multi-FCN
+  case) that fits a model to a stock's own historical behavior and simulates forward — a genuinely
+  different question from risk-neutral pricing, not a pricer, and not comparable to the `Product
+  MtM/` numbers without care. See its own [`Estimators/FCN Probability/README.md`](Estimators/FCN%20Probability/README.md) for the real-world-vs-risk-neutral distinction in detail. Of course, this is a naive estimator, meaning it is only there for illustrative purposes and its output should be taken with caution.
+
+Don't mix numbers across these two folders casually: a `Product MtM/` price and an `Estimators/`
+probability are computed under different assumptions (own-vol vs risk-neutrality) for different purposes, even when they share an underlying and a strike.
+
+## Why QuantLib?
+
+Earlier iteration of this project included a more mechanical Black-Scholes implementation as that was my starting point from my theoretical reading (Hull, mainly). The very beginning of this project was: provide the model, specifications, objectives and steer Claude Code towards the most logical/defensible output. Crucially, the first product MtM computed was an outperfomance certificate which has quite easily understable embedded options, therefore the more mechanical Black-Scholes specification made sense - LEPO (treated as current spot) and a long ATM call. Creating a fair value for that did not take a huge deal of understanding as it was just applying the standard Black-Scholes formula. 
+
+However, when the product library expanded, specifically that with barrier options, I ran into difficulties actually implementing the formulas due to A. complexity, B. fundamental understanding, C. inability to verify the generated code, therefore I could not trust/validate the output. The main issue came from the knock-in/out pricing/formula and the observation and I just could not validate the code. From this, the decision to migrate to QuantLib was taken as it would simplify the process and actually provide pricing I could trust to a higher degree. QuantLib is an established, widely-used open-source library, and therefore I trust it to a higher degree than my own, "from-scratch" implementation.
+
+## `Redundant (Past)/`
+
+Earlier, superseded exploratory scripts (early FCN attempts before theory became more grounded, a Markov-chain probability model, an old Streamlit app, an old backtest script) kept for history. Not maintained, not held to the same conventions or scrutiny as the two folders above, and not a source of current numbers — skip this folder unless you're specifically curious about earlier iterations and earlier interests before option MtM pricing originated. 
+
+## Setup
+
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Every script under `Product MtM/` and `Estimators/` is standalone (`python3 "Script Name.py"`) and
+fetches its own data from `yfinance`, falling back to FRED for the S&P 500/VIX series where noted.
+See each folder's own README for the exact commands and what each script produces.
+
+## About the AI assistance
+
+The implementation — pricing formulas, Monte Carlo/lattice engines, chart generation, and this
+documentation — was generated by Claude Code under my direction, not written by hand. I reviewed
+and steered it, but that is not the same as independent expert validation. Where I know of a
+substantive open modeling question beyond what's already documented (rather than a presentation or
+labeling issue), it's called out explicitly in the relevant README's "Scope and limitations"
+section instead of being silently fixed or silently left unmentioned.

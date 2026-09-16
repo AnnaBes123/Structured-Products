@@ -3,9 +3,22 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
+
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
@@ -31,65 +44,6 @@ MC_SEED = 42
 # varies below is a COMMON multiplicative shock applied to every name at
 # once, same convention as Multi-RC's own Greek Sensitivity.py.
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
-
-
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """Trailing dividend yield, used as a flat continuous yield q. See
-    Multi-RC's README (Product MtM/Yield/Reverse Convertible/Multi-RC/)
-    for the full rationale and field-selection notes."""
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
 
 
 def fetch_multi_asset_path(tickers, start, end):
@@ -161,7 +115,7 @@ def simulate_forward_price(relative_spots_today, valuation_date, maturity_date, 
     call_time = grid_years[first_call_idx]
     settle_time = np.where(any_triggered, call_time, grid_years[-1])
 
-    principal_pv = 1.0 * (1 + r + credit_spread) ** (-settle_time)
+    principal_pv = 1.0 * np.exp(-(r + credit_spread) * settle_time)
 
     put_quantity = 1.0 / strike
     put_payoff = np.where(any_triggered, 0.0, -put_quantity * np.maximum(strike - worst_of_T, 0.0))
@@ -171,22 +125,10 @@ def simulate_forward_price(relative_spots_today, valuation_date, maturity_date, 
     return {"price": price, "prob_called": float(np.mean(any_triggered))}
 
 
-# ---------------------------------------------------------------------------
-# GREEKS LADDER
-#
-# T, strike, trigger, funding curve, and each name's (trailing-window) vol/
-# correlation/dividend yield are held constant - the only thing that varies
-# is a COMMON multiplicative shock applied to every name in the basket at
-# once, evaluated at entry (day-1 observation dates, all in the future),
-# same x-axis convention as Multi-RC's own Greeks ladder.
-#
-# Delta and Vega are reported PER NAME. Rho stays a single shared line.
-# Theta is excluded - not because T is fixed (it does move along the day-1
-# observation grid via finite_difference_greeks elsewhere), but because
-# this ladder's whole point is isolating the SPOT sensitivity at a single
-# fixed valuation date, same reasoning as the single-name Autocallable
-# FCN's own Greeks ladder.
-# ---------------------------------------------------------------------------
+# GREEKS LADDER: x-axis is a COMMON multiplicative shock applied to every
+# name at once (day-1 observation dates); T, strike, trigger, funding curve
+# and each name's vol/correlation/dividend yield are held fixed. Delta/Vega
+# per name, Rho a single shared line, Theta excluded. See README.
 
 def greek_sensitivity_table(valuation_date, maturity_date, future_call_obs_dates, sigmas, qs, corr_matrix,
                              tickers, r=RISK_FREE_RATE, spot_multiples=SPOT_SCENARIO_RANGE,
@@ -245,7 +187,7 @@ def plot_greek_sensitivity(table, tickers, T, r, underlying_names):
     ax.axvline(TRIGGER * 100, color="dodgerblue", linewidth=0.8, linestyle="dotted")
     ax.set_title("Price (% of Par)")
     ax.set_xlabel("Spot (% of S0, all names shocked together)")
-    ax.set_ylabel("Fair Value (% of Par)")
+    ax.set_ylabel("Model Value of Redemption Component (% of Par)")
     ax.grid(True, color="lightgrey", linewidth=0.4)
 
     ax = axes[0, 1]

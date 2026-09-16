@@ -7,29 +7,38 @@ import QuantLib as ql
 
 plt.rcParams["font.family"] = "Arial"
 
+import sys
+
+_PRODUCT_MTM_ROOT = os.path.dirname(os.path.abspath(__file__))
+while os.path.basename(_PRODUCT_MTM_ROOT) != "Product MtM":
+    _PRODUCT_MTM_ROOT = os.path.dirname(_PRODUCT_MTM_ROOT)
+if _PRODUCT_MTM_ROOT not in sys.path:
+    sys.path.insert(0, _PRODUCT_MTM_ROOT)
+
+from _common import (
+    fetch_daily_closes,
+    fetch_dividend_yield,
+    fetch_underlying_name,
+    interpolate_implied_vol,
+    fetch_trailing_realized_vol,
+    realized_annualized_vol,
+    max_drawdown,
+    _quantlib_process,
+)
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
 
 # --- Product terms ---
 STRIKE = 1.00                  # LEPO reference / down-and-out put strike, as a fraction of S0
-BARRIER = 0.85                 # down-and-out barrier (H) for the embedded puts, H < STRIKE
-PUT_QUANTITY = 2.0             # the "twin win" multiple - set by hand like every other manually-
-                                # set term in this repo. 2.0 is what gives the classic twin-win
-                                # payoff: it exactly cancels the LEPO's own 1x downside exposure
-                                # below the strike and replaces it with an equal-and-opposite GAIN
-                                # (see the replication note below for the algebra) - as long as the
-                                # barrier is never touched.
+BARRIER = 0.70                 # down-and-out barrier (H) for the embedded puts, H < STRIKE
+PUT_QUANTITY = 2.0             # the "twin win" multiple - see README Replication for the algebra
 RISK_FREE_RATE = 0.04
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
 
-# TICKER drives dividend handling automatically: any "^"-prefixed Yahoo
-# index ticker (e.g. "^GSPC") is treated as paying no dividend (q=0);
-# any real stock ticker (e.g. "AAPL", "MCD") gets a real trailing dividend
-# yield fetched and applied - see fetch_dividend_yield below. No separate
-# flag needed, just set TICKER to whichever kind of underlying you want.
-TICKER = "RACE"
+TICKER = "RACE"  # drives dividend handling automatically - see fetch_dividend_yield
 FRED_SERIES = "SP500"
 
 VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
@@ -38,86 +47,20 @@ VIX_FRED_SERIES = "VIXCLS"
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
 
 
-def fetch_daily_closes(ticker, start, end, fred_series=None):
-    series = None
-
-    try:
-        import yfinance as yf
-        data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-        if data is not None and not data.empty:
-            close = data["Close"]
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            series = close.dropna()
-    except Exception as exc:
-        print(f"  yfinance failed for {ticker} ({exc})" + (" ; trying FRED fallback..." if fred_series else ""))
-
-    if (series is None or series.empty) and fred_series:
-        try:
-            import pandas_datareader.data as web
-            data = web.DataReader(fred_series, "fred", start, end)
-            series = data[fred_series].dropna()
-        except Exception as exc:
-            raise RuntimeError(f"Could not fetch {ticker} data from either yfinance or FRED: {exc}")
-
-    if series is None or series.empty:
-        raise RuntimeError(f"No data returned for {ticker}")
-
-    return series
-
-
-def fetch_dividend_yield(ticker):
-    """
-    Trailing dividend yield, used as a flat continuous yield q - this is
-    what lets TICKER be either a stock (real dividend yield applied) or an
-    index (q=0). Indices ("^" tickers) are treated as paying none - Yahoo
-    doesn't expose a meaningful per-ticker yield field for them anyway.
-
-    Prefers `trailingAnnualDividendYield` (already a plain fraction, e.g.
-    0.0032 for 0.32%) over `dividendYield`, since yfinance/Yahoo have at
-    various times returned the latter as a PERCENTAGE (e.g. 0.33 meaning
-    0.33%, not 33%) rather than a fraction - mixing the two up would
-    silently overstate the yield ~100x. Falls back to dividendRate/price
-    if even that field is missing.
-    """
-    if ticker.startswith("^"):
-        return 0.0
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        yield_ = info.get("trailingAnnualDividendYield")
-        if yield_ is None:
-            rate = info.get("dividendRate") or info.get("trailingAnnualDividendRate")
-            price = info.get("currentPrice") or info.get("regularMarketPrice")
-            yield_ = (rate / price) if (rate and price) else 0.0
-        return float(yield_)
-    except Exception as exc:
-        print(f"  Could not fetch dividend yield for {ticker} ({exc}); assuming q=0")
-        return 0.0
-
-
-def fetch_underlying_name(ticker):
-    """Human-readable underlying name for chart/print labels, falling back
-    to the raw ticker symbol if yfinance metadata is unavailable."""
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info
-        return info.get("shortName") or info.get("longName") or ticker
-    except Exception:
-        return ticker
-
-
 def fetch_index_path(entry_date, years=TENOR):
-    """
-    Returns the daily CLOSE series. The barrier is observed "on close" -
-    breach is determined from the same daily closing price used for
-    valuation, matching how the CRR forward-pricing lattice already checks
-    the barrier once per trading day (see the Barrier Reverse Convertible
-    product's README, Product MtM/Yield/, for the full rationale).
-    """
+    """Daily CLOSE series - the barrier is observed on close. See README
+    "How the daily MTM tracks the barrier"."""
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
-    return fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    path = fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    if path.index[-1] < end - pd.Timedelta(days=10):
+        raise RuntimeError(
+            f"Requested window {start.date()} to {end.date()} extends past the last available "
+            f"trading day ({path.index[-1].date()}) - this script models a COMPLETED historical "
+            f"window, not a live in-progress note. Pick an ENTRY_DATE/TENOR combination that ends "
+            f"on or before today."
+        )
+    return path
 
 
 def fetch_vol_term_structure(entry_date, years=TENOR):
@@ -139,33 +82,6 @@ def fetch_vol_term_structure(entry_date, years=TENOR):
     return term_structure
 
 
-def interpolate_implied_vol(vols_by_tenor, T_years):
-    points = sorted(vols_by_tenor.items())
-
-    if T_years <= points[0][0]:
-        return points[0][1]
-    if T_years >= points[-1][0]:
-        return points[-1][1]
-
-    for (t0, v0), (t1, v1) in zip(points, points[1:]):
-        if t0 <= T_years <= t1:
-            var0, var1 = v0 ** 2 * t0, v1 ** 2 * t1
-            var_T = var0 + (var1 - var0) * (T_years - t0) / (t1 - t0)
-            return np.sqrt(var_T / T_years)
-
-    return points[-1][1]
-
-
-def _quantlib_process(S, r, q, sigma, today):
-    calendar = ql.NullCalendar()
-    day_count = ql.Actual365Fixed()
-    spot = ql.QuoteHandle(ql.SimpleQuote(S))
-    rf_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, r, day_count, ql.Continuous, ql.Annual))
-    div_ts = ql.YieldTermStructureHandle(ql.FlatForward(today, q, day_count, ql.Continuous, ql.Annual))
-    vol_ts = ql.BlackVolTermStructureHandle(ql.BlackConstantVol(today, calendar, sigma, day_count))
-    return ql.BlackScholesMertonProcess(spot, div_ts, rf_ts, vol_ts)
-
-
 def black_scholes_put(S, K, T, r, sigma, q=0.0):
     """Plain European put via QuantLib's AnalyticEuropeanEngine - used only
     for the closed-form verification check (barrier pushed unreachable ->
@@ -177,7 +93,7 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.VanillaOption(payoff, exercise)
@@ -186,13 +102,8 @@ def black_scholes_put(S, K, T, r, sigma, q=0.0):
 
 
 def lepo_price_and_greeks(S, T, q=0.0):
-    """LEPO (Low Exercise Price Option): the risk-neutral PV of receiving
-    one share at maturity, S*e^(-qT) - equals spot exactly only when q=0.
-    Priced directly here (not via a general option engine with K~0) since
-    it has an exact closed form and K=0 is a numerically awkward input for
-    one. Independent of r entirely - a well-known identity (the PV of a
-    future share delivery carries no rate exposure, unlike a strike-
-    bearing option)."""
+    """LEPO closed form, S*e^(-qT) - see ../../Yield/Discount
+    Certificate/MATHEMATICS.md section 1."""
     discount_q = np.exp(-q * T)
     return {
         "price": S * discount_q, "delta": discount_q, "vega": 0.0, "rho": 0.0,
@@ -201,17 +112,8 @@ def lepo_price_and_greeks(S, T, q=0.0):
 
 
 def down_and_out_put_crr(S, K, H, T, r, sigma, steps, q=0.0):
-    """
-    Down-and-out put, strike K, barrier H < K, priced on a Cox-Ross-
-    Rubinstein binomial lattice (QuantLib BinomialCRRBarrierEngine) with
-    the barrier checked once per step - steps should be the number of
-    remaining trading days, so the model's monitoring frequency matches
-    the daily data it's priced against (see the Barrier Reverse Convertible
-    product's README, Product MtM/Yield/, for the full rationale). Assumes
-    the barrier has NOT already been breached - the caller is responsible
-    for pricing this leg at 0 once the barrier has been touched at any
-    point in the certificate's life so far.
-    """
+    """CRR down-and-out put. Assumes NOT already breached - see
+    ../../Yield/Barrier Reverse Convertible/MATHEMATICS.md."""
     if S <= H:
         return 0.0
     if T <= 0:
@@ -221,7 +123,7 @@ def down_and_out_put_crr(S, K, H, T, r, sigma, steps, q=0.0):
     ql.Settings.instance().evaluationDate = today
     process = _quantlib_process(S, r, q, sigma, today)
 
-    days = max(int(round(T * 365.25)), 1)
+    days = max(int(round(T * 365)), 1)
     exercise = ql.EuropeanExercise(today + ql.Period(days, ql.Days))
     payoff = ql.PlainVanillaPayoff(ql.Option.Put, K)
     option = ql.BarrierOption(ql.Barrier.DownOut, H, 0.0, payoff, exercise)
@@ -231,42 +133,9 @@ def down_and_out_put_crr(S, K, H, T, r, sigma, steps, q=0.0):
     return option.NPV()
 
 
-# ---------------------------------------------------------------------------
-# REPLICATION: Twin-Win Certificate
-#            = Long LEPO (zero-strike call, = holding the underlying via a
-#              forward purchase)
-#            + PUT_QUANTITY (2x) Long Down-and-Out Put (struck at
-#              STRIKE=100% of S0, barrier BARRIER < STRIKE, checked once
-#              per trading day)
-#
-# The defining feature: as long as the barrier is never touched, a FALL in
-# the index below the strike is converted into a GAIN of the same
-# magnitude, not a loss - hence "twin win" (you profit whichever direction
-# the index moves, as long as it doesn't fall too far). The algebra: below
-# the strike (K = STRIKE*S0) and not breached, the certificate is worth
-# LEPO(S) + 2*(K-S) = S + 2K - 2S = 2K - S. In return terms (K=S0):
-# (2*S0 - S)/S0 - 1 = 1 - S/S0 = -(S/S0 - 1) = -index_return - the exact
-# NEGATIVE of the index's own return. A 2x put quantity is what makes this
-# exact cancel-and-flip work: 1x would only cancel the LEPO's downside
-# (flat payoff below strike, no upside from a fall); anything other than
-# 2x leaves either a net loss or a leveraged gain instead of a clean
-# mirror image.
-#
-# Above the strike, the puts are worthless and the certificate is just the
-# LEPO - ordinary 1:1 upside participation, same as the plain
-# Outperformance certificate's zero-strike leg.
-#
-# Touch the barrier once and BOTH puts are knocked out for good - the
-# "twin win" inversion feature is gone, and the certificate reverts to
-# being just the LEPO for the remainder of its life: ordinary 1:1 index
-# tracking, upside OR downside, no more floor and no more inversion.
-#
-# The puts are priced on a Cox-Ross-Rubinstein binomial lattice (QuantLib
-# BinomialCRRBarrierEngine) rather than a continuous-monitoring closed
-# form - see the Barrier Reverse Convertible product's README
-# (Product MtM/Yield/) for the full rationale; the same reasoning applies
-# here unchanged.
-# ---------------------------------------------------------------------------
+# REPLICATION: Long LEPO + PUT_QUANTITY (2x) Long Down-and-Out Put. The 2x
+# multiple is what flips a fall below strike into an equal gain - see
+# README.md Replication for the algebra. Priced on a CRR binomial lattice.
 
 def twin_win_certificate_price(S, S0, T_remaining, sigma, breached, r=RISK_FREE_RATE, q=0.0, steps=None):
     lepo = lepo_price_and_greeks(S, T_remaining, q)
@@ -283,13 +152,8 @@ def twin_win_certificate_price(S, S0, T_remaining, sigma, breached, r=RISK_FREE_
 
 
 def verify_against_closed_form(S0, T, sigma, r=RISK_FREE_RATE, q=0.0, steps=None):
-    """
-    Barrier pushed unreachable (H -> 0): the down-and-out put can never
-    knock out, so its CRR price should converge onto the plain vanilla put
-    struck at STRIKE - confirms the barrier engine collapses to the
-    ordinary closed form in the no-barrier limit, the same style of check
-    used for the Bonus Certificate's down-and-out put.
-    """
+    """Barrier pushed unreachable: CRR price must converge onto the
+    plain vanilla put struck at STRIKE."""
     K = STRIKE * S0
     n = steps if steps is not None else max(round(T * 252), 1)
 
@@ -301,20 +165,8 @@ def verify_against_closed_form(S0, T, sigma, r=RISK_FREE_RATE, q=0.0, steps=None
 
 
 def twin_win_certificate_running_return(S0, path):
-    """
-    Participation tracker: the terminal payoff FORMULA applied to today's
-    spot, as a return over par. NOT what you'd actually receive if the
-    certificate were sold or unwound today - it ignores all remaining time
-    value in the still-live puts, unlike the MTM fair-value line, which is
-    the closest thing to an actual today's-value estimate.
-
-    If the barrier has never been touched up to today: index return above
-    the strike (ordinary upside participation), or the exact NEGATIVE of
-    the index return below it (the "twin win" inversion - see the
-    REPLICATION note above for the algebra). Once the barrier IS touched,
-    the inversion is gone for good - plain index return, up or down, for
-    every subsequent date.
-    """
+    """Redemption Payoff (Relative to Par) - see README "Reading the
+    charts" and "How the daily MTM tracks the barrier"."""
     strike_level = STRIKE * S0
     barrier_level = BARRIER * S0
     breached_so_far = path.cummin() <= barrier_level
@@ -345,27 +197,10 @@ def twin_win_certificate_mtm_price_series(S0, path, vol_term_structure, r=RISK_F
 
 
 def finite_difference_greeks_at(S, S0, T, sigma, breached, r=RISK_FREE_RATE, q=0.0, steps=None):
-    """
-    Price and Greeks (central finite differences) at an arbitrary spot S
-    and barrier-breach status - the general form behind
-    finite_difference_greeks, which is just this evaluated at S=S0,
-    breached=False (the inception case: spot hasn't moved, barrier hasn't
-    been touched).
-
-    The CRR step count is fixed ONCE (from the un-bumped T) and reused for
-    every bumped evaluation, including the T-bump for theta, so a
-    differing step count between bumps never injects lattice-discreteness
-    noise into the Greek.
-
-    bump_S and bump_sigma are much wider than the "0.1% of spot" convention
-    used for the closed-form (non-barrier) products in this repo. A CRR
-    lattice is rebuilt from scratch on every call, and its node grid scales
-    multiplicatively with both S and sigma, so a small bump can land
-    entirely inside a discrete "sawtooth" lattice artifact and return a
-    Greek off by a large factor - see the Bullish Sharkfin product's
-    README (Product MtM/Capital Protection/) for the specific bump-size
-    scan that surfaced this.
-    """
+    """Central finite differences at an arbitrary spot/breach status -
+    the general form behind finite_difference_greeks (S=S0, breached=
+    False). Wider bumps than the closed-form products - see the Bullish
+    Sharkfin README's bump-size scan."""
     bump_S, bump_sigma, bump_r, bump_T = S0 * 0.02, 0.02, 0.0001, 21 / 365
     n = steps if steps is not None else max(round(T * 252), 1)
 
@@ -393,17 +228,6 @@ def finite_difference_greeks(S0, T, sigma, r=RISK_FREE_RATE, q=0.0):
     return finite_difference_greeks_at(S0, S0, T, sigma, False, r, q=q)
 
 
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
-
-
-def max_drawdown(path):
-    running_max = path.cummax()
-    drawdown = path / running_max - 1
-    return drawdown.min()
-
-
 def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=None, q=0.0):
     index_return_pct = (path / S0 - 1) * 100
     certificate_return_pct = twin_win_certificate_running_return(S0, path) * 100
@@ -413,7 +237,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
             label=underlying_name)
     ax.tick_params(axis="y", labelcolor="firebrick")
     ax.plot(certificate_return_pct.index, certificate_return_pct.values, color="indianred", linewidth=1.5,
-            linestyle="dashed", label=f"Twin-Win Certificate Participation Tracker ({PUT_QUANTITY:.0f}x below strike)")
+            linestyle="dashed", label=f"Twin-Win Certificate Redemption Payoff (Relative to Par) ({PUT_QUANTITY:.0f}x below strike)")
 
     ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
     ax.axhline(0, color="lightgrey", linewidth=0.8)
@@ -456,7 +280,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
             f"Barrier Percentage: {BARRIER * 100:,.2f}%\n"
             f"{underlying_name} Return: {S_T / S0 - 1:.2%}\n"
             f"Twin-Win Certificate Return: {certificate_return:.2%}\n"
-            f"Approximate MtM Fair Value vs. Par (%) at Inception: {fair_value_pct_of_par - 1:.2%}\n"
+            f"Model Value vs. Par (%) at Inception: {fair_value_pct_of_par - 1:.2%}\n"
             f"Realized Vol (ann.): {vol:.2%}\n"
             f"Max Drawdown: {max_drawdown(path):.2%}"
         )
@@ -470,8 +294,8 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
         ax2 = ax.twinx()
         mtm_line, = ax2.plot(
             mtm_gain_over_par_pct.index, mtm_gain_over_par_pct.values, color="darkred", linewidth=1.5,
-            linestyle="solid", label="Twin-Win Certificate - Approximate MtM (% of Par)")
-        ax2.set_ylabel("MtM Fair Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
+            linestyle="solid", label="Twin-Win Certificate — Model Value (% of Par)")
+        ax2.set_ylabel("Model Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
         ax2.tick_params(axis="y", labelcolor="darkred")
 
         combined_min = min(index_return_pct.min(), certificate_return_pct.min(), mtm_gain_over_par_pct.min(),
@@ -486,7 +310,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
 
     end_date = index_return_pct.index[-1]
     ax.set_title(f"{underlying_name} Price Return Path from {path.index[0].date()} to {end_date.date()} \n"
-                 f"vs Approximate Mark-to-Market (MtM) Value of Twin-Win Certificate "
+                 f"vs Model Value vs. Par — Twin-Win Certificate "
                  f"({PUT_QUANTITY:.0f}x Downside Participation)")
     ax.legend(lines, labels, loc="upper left", fontsize=9)
     plt.tight_layout()
@@ -518,21 +342,31 @@ if __name__ == "__main__":
         "Barrier Level": f"{BARRIER * S0:,.2f}",
         "Barrier Touched": "Yes" if barrier_touched else "No",
         f"{underlying_name} Return": f"{S_T / S0 - 1:.2%}",
-        "Twin-Win Certificate Return": f"{certificate_return:.2%}",
+        "Twin-Win Certificate — Redemption Payoff (vs. Par)": f"{certificate_return:.2%}",
         "Realized Vol (ann.)": f"{vol:.2%}",
         "Max Drawdown": f"{max_drawdown(path):.2%}",
     })
 
     print("\n" + summary.to_string())
 
-    print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
-    raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
-    vol_term_structure = {
-        tenor: series.reindex(path.index).ffill().bfill()
-        for tenor, series in raw_term_structure.items()
-    }
-    vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
-    entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+    if TICKER.startswith("^"):
+        print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
+        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        vol_term_structure = {
+            tenor: series.reindex(path.index).ffill().bfill()
+            for tenor, series in raw_term_structure.items()
+        }
+        vols_at_entry = {tenor: series.iloc[0] for tenor, series in vol_term_structure.items()}
+        entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
+        vol_source_desc = f"interpolated from the {path.index[0].date()} VIX/VIX3M/VIX6M term structure"
+    else:
+        print(f"\n{TICKER} is a single name - no free historical implied-vol source exists for it, so")
+        print(f"using its own trailing 2y REALIZED volatility instead of the SPX VIX/VIX3M/VIX6M proxy")
+        print(f"(held flat for the note's life, same technique as the DCI/Multi-FCN/Multi-RC products):")
+        entry_vol = fetch_trailing_realized_vol(TICKER, ENTRY_DATE)
+        vol_term_structure = {TENOR: pd.Series(entry_vol, index=path.index)}
+        vol_source_desc = f"{TICKER}'s own trailing 2y realized vol (not VIX-derived)"
+        print(f"  {entry_vol:.2%}")
 
     print(f"\nVerifying the QuantLib CRR wiring (barrier pushed unreachable should collapse to the")
     print(f"plain vanilla put struck at the money):")
@@ -545,10 +379,10 @@ if __name__ == "__main__":
     greeks = finite_difference_greeks(S0, TENOR, entry_vol, q=dividend_yield)
     fair_value_pct_of_par = greeks["price"] / S0
 
-    print(f"\nTwin-Win Certificate fair value at inception")
+    print(f"\nTwin-Win Certificate — model value at inception")
     print(f"(QuantLib: LEPO leg closed-form, {PUT_QUANTITY:.0f}x down-and-out put via a CRR binomial")
     print(f"lattice (barrier checked once per trading day), S=S0, T={TENOR}y, vol={entry_vol:.2%}")
-    print(f"interpolated from the {path.index[0].date()} VIX/VIX3M/VIX6M term structure, dividend")
+    print(f"{vol_source_desc}, dividend")
     print(f"yield {dividend_yield:.2%}):")
     print(f"  {fair_value_pct_of_par:.2%} of par ({fair_value_pct_of_par - 1:+.2%} vs. par)")
 
@@ -558,7 +392,7 @@ if __name__ == "__main__":
     print(f"  Rho:   {greeks['rho'] / S0 * 0.01:.4f}  (per 1% change in rates)")
     print(f"  Theta: {greeks['theta'] / S0:.4f} per year / {greeks['theta'] / S0 / 365:.5f} per day")
 
-    print(f"\nMTM Fair Value vs. Par at Inception:")
+    print(f"\nModel Value vs. Par at Inception:")
     print(f"  Price: {greeks['price']:,.2f}  vs. Par (S0): {S0:,.2f}  ({fair_value_pct_of_par:.2%} of par)")
 
     plot_path(path, S0, underlying_name, mtm_vol_term_structure=vol_term_structure, greeks=greeks, q=dividend_yield)

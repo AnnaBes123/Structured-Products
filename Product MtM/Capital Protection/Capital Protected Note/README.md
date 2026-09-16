@@ -8,6 +8,12 @@ ticker works - see "Underlying selection" below.
 This is a **deterministic historical approximation** — real historical prices, no simulation or Monte Carlo
 (the same style as the other products in `Product MtM/`).
 
+> **"Model Value"** means this script's own computed value of the product's payoff, as a
+> percentage of par, under the assumptions listed below (flat rates, a vol proxy, etc.) — read it
+> as "what this simplified model says the payoff is worth today," not a market quote or a claim
+> that the product could actually be bought or sold at that level. See `Product MtM/README.md`
+> for the full explanation.
+
 The simplest product in `Product MtM/Capital Protection/` — no barrier at all, unlike the
 `Bullish Sharkfin`/`Bearish Sharkfin` products in the sibling folders. Read this one first if
 you're new to this category; the barrier products add a knock-out feature on top of essentially
@@ -92,9 +98,9 @@ participation rate, change the underlying, or change the window.
 ## Output
 
 Running `Capital Protected Note.py` prints the resolved underlying name and dividend yield,
-entry/maturity levels, realized returns, the note's fair value at inception (as % of par), and
-its Greeks — then saves a chart with the underlying's price and the note's Participation Tracker
-on the left axis and the note's fair value on its own right-hand axis, with a dotted blue line
+entry/maturity levels, realized returns, the note's model value at inception (as % of par), and
+its Greeks — then saves a chart with the underlying's price and the note's Redemption Payoff (Relative to Par)
+on the left axis and the note's model value on its own right-hand axis, with a dotted blue line
 marking the strike.
 
 Running `Greek Sensitivity.py` prints and charts the Greeks ladder: strike, participation, tenor,
@@ -105,14 +111,13 @@ vol and the funding curve held fixed, only spot varies.
 ### `Capital Protected Note.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Participation Tracker": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
   applied to each day's spot, `PARTICIPATION_RATE * max(S - Strike, 0) / S0` (flat at 0% below the
   strike, rising at `PARTICIPATION_RATE`x the index's own pace above it). This is **not** what
   you'd actually receive if the note were sold or unwound on that date - it ignores all remaining
-  time value in the still-live call. See the right-axis MTM line for the actual fair-value
-  estimate.
+  time value in the still-live call. See the right-axis model-value line for the estimate that accounts for that.
 - **Left axis, dotted blue line** — the strike.
-- **Right axis, solid darkred line** — the note's fair value (% of par), converging onto the
+- **Right axis, solid darkred line** — the note's model value (% of par), converging onto the
   tracker line exactly at maturity (an option's time value is 0 at expiry, so the two are
   identical by then). Note this line starts **above** par at inception whenever
   `PARTICIPATION_RATE` and the prevailing rate/vol combination make the call worth more than the
@@ -147,3 +152,8 @@ python3 "Greek Sensitivity.py"
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX series
 if Yahoo is unavailable.
+## Scope and limitations
+
+See `Product MtM/README.md` for the shared assumptions (vol proxy, flat rates, credit spread,
+dividend treatment, monitoring approximation, numerical limitations) and the project's
+AI-assisted learning-project disclosure.
