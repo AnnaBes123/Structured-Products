@@ -23,6 +23,7 @@ from _common import (
     fetch_trailing_realized_vol,
     _quantlib_process,
     zcb_price_and_greeks,
+    fetch_risk_free_rate,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -37,16 +38,19 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 STRIKE = 1.00
 BARRIER = 1.20
 REBATE = 0.0
-RISK_FREE_RATE = 0.04
-GS_CDS_SPREAD = 0.005308
+GS_CDS_SPREAD = 0.002675       # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - tenor-matched to TENOR=1
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
+RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
 
 TICKER = "^GSPC"
-FRED_SERIES = "SP500"
+SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
+                             # is literally "^GSPC"; never used as a stand-in for a
+                             # single-name stock's own price
 
-VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
+SPX_VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}  # SPX-only proxy;
+                                                                            # only used when TICKER is an index (see below)
 VIX_FRED_SERIES = "VIXCLS"
 
 # This ladder spans 60%-140% of S0, which crosses BARRIER - both the
@@ -57,15 +61,15 @@ SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt s
 def fetch_index_path(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
-    return fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    return fetch_daily_closes(TICKER, start, end, fred_series=SPX_FRED_SERIES if TICKER == "^GSPC" else None)
 
 
-def fetch_vol_term_structure(entry_date, years=TENOR):
+def fetch_spx_vol_term_structure(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
 
     term_structure = {}
-    for ticker, tenor_days in VOL_TERM_STRUCTURE_TICKERS.items():
+    for ticker, tenor_days in SPX_VOL_TERM_STRUCTURE_TICKERS.items():
         fred_series = VIX_FRED_SERIES if ticker == "^VIX" else None
         try:
             series = fetch_daily_closes(ticker, start, end, fred_series=fred_series)
@@ -170,7 +174,7 @@ def plot_greek_sensitivity(table, S0, T, sigma, r, underlying_name):
         ("Price (% of Par)", "Model Value (% of Par)", "firebrick"),
         ("Delta", "Delta", "darkred"),
         ("Vega (per 1% vol)", "Vega (per 1% change in vol)", "indianred"),
-        ("Rho (per 1% rate)", "Rho (per 1% change in SOFR)", "brown"),
+        ("Rho (per 1% rate)", "Rho (per 1% change in the 1Y Treasury rate)", "brown"),
     ]
 
     for ax, (col, ylabel, color) in zip(axes.flat, panels):
@@ -186,7 +190,7 @@ def plot_greek_sensitivity(table, S0, T, sigma, r, underlying_name):
 
     fig.suptitle(
         f"{underlying_name} Bullish Sharkfin - Greeks Ladder (T, strike, barrier fixed, spot varies)\n"
-        f"Fixed throughout: T={T}y, vol={sigma:.2%}, SOFR={r:.2%}, CDS={GS_CDS_SPREAD:.2%}, "
+        f"Fixed throughout: T={T}y, vol={sigma:.2%}, 1Y Treasury={r:.2%}, CDS={GS_CDS_SPREAD:.2%}, "
         f"strike={STRIKE:.0%}, barrier={BARRIER:.0%} of S0={S0:,.2f}"
     )
     plt.tight_layout()
@@ -218,7 +222,7 @@ if __name__ == "__main__":
 
     if TICKER.startswith("^"):
         print(f"Fetching SPX implied vol term structure for {ENTRY_DATE}...")
-        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        raw_term_structure = fetch_spx_vol_term_structure(ENTRY_DATE)
         vols_at_entry = {tenor: series.iloc[0] for tenor, series in raw_term_structure.items()}
         entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
         vol_source_desc = f"the VIX/VIX3M/VIX6M term structure on {ENTRY_DATE}"
@@ -237,7 +241,7 @@ if __name__ == "__main__":
     print(f"  Barrier:         {BARRIER:.0%} of S0 (knock-out, CRR lattice, checked once per trading day)")
     print(f"  Tenor (T):       {TENOR} year(s)")
     print(f"  Vol (sigma):     {entry_vol:.2%}  (from {vol_source_desc})")
-    print(f"  SOFR proxy:      {RISK_FREE_RATE:.2%}")
+    print(f"  1Y Treasury (FRED DGS1): {RISK_FREE_RATE:.2%}")
     print(f"  GS CDS spread:   {GS_CDS_SPREAD:.2%}")
     print(f"  Dividend yield:  {dividend_yield:.2%}  (flat, continuous - 0% if an index)")
 

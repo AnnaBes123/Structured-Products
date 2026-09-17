@@ -21,6 +21,7 @@ from _common import (
     fetch_underlying_name,
     interpolate_implied_vol,
     fetch_trailing_realized_vol,
+    fetch_risk_free_rate,
     _quantlib_process,
 )
 
@@ -31,15 +32,18 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 STRIKE = 1.00
 BONUS_LEVEL = 1.00
 BARRIER = 0.80
-RISK_FREE_RATE = 0.04
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
+RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical
 
 TICKER = "^GSPC"
-FRED_SERIES = "SP500"
+SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
+                             # is literally "^GSPC"; never used as a stand-in for a
+                             # single-name stock's own price
 
-VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
+SPX_VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}  # SPX-only proxy;
+                                                                            # only used when TICKER is an index (see below)
 VIX_FRED_SERIES = "VIXCLS"
 
 # T, bonus level, barrier, vol and rate fixed; only spot varies below.
@@ -49,15 +53,15 @@ SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt s
 def fetch_index_path(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
-    return fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    return fetch_daily_closes(TICKER, start, end, fred_series=SPX_FRED_SERIES if TICKER == "^GSPC" else None)
 
 
-def fetch_vol_term_structure(entry_date, years=TENOR):
+def fetch_spx_vol_term_structure(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
 
     term_structure = {}
-    for ticker, tenor_days in VOL_TERM_STRUCTURE_TICKERS.items():
+    for ticker, tenor_days in SPX_VOL_TERM_STRUCTURE_TICKERS.items():
         fred_series = VIX_FRED_SERIES if ticker == "^VIX" else None
         try:
             series = fetch_daily_closes(ticker, start, end, fred_series=fred_series)
@@ -227,7 +231,7 @@ if __name__ == "__main__":
 
     if TICKER.startswith("^"):
         print(f"Fetching SPX implied vol term structure for {ENTRY_DATE}...")
-        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        raw_term_structure = fetch_spx_vol_term_structure(ENTRY_DATE)
         vols_at_entry = {tenor: series.iloc[0] for tenor, series in raw_term_structure.items()}
         entry_vol = interpolate_implied_vol(vols_at_entry, TENOR)
         vol_source_desc = f"the VIX/VIX3M/VIX6M term structure on {ENTRY_DATE}"

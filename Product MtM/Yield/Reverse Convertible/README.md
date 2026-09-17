@@ -48,12 +48,13 @@ recovers and finishes +16.65%, the terminal note return is 0% (full principal), 
 
 ## Discounting: two different rates for two different risks
 
-- **ZCB leg** — discounted at `Principal / (1 + SOFR + issuer credit spread)^T`. This is where
+- **ZCB leg** — discounted at `Principal * e^(-(1Y Treasury rate + issuer credit spread) * T)`
+  (continuous compounding, matching QuantLib's own `FlatForward` term structures). This is where
   the investor is exposed to the **issuer's own default risk** (a reverse convertible is
   unsecured debt of whichever bank issues it), so the discount rate includes that bank's credit
   spread on top of the risk-free rate.
 - **Put leg** — priced via **QuantLib** (`AnalyticEuropeanEngine`, closed-form
-  Black-Scholes-Merton) at **SOFR alone**, no credit spread. A bank prices and hedges the option
+  Black-Scholes-Merton) at **the 1Y Treasury rate alone**, no credit spread. A bank prices and hedges the option
   on standard derivative-pricing terms, not its own funding curve — the credit-risk premium
   belongs entirely to the bond leg, not the option leg.
 
@@ -84,8 +85,8 @@ touching:
 | Term | Default | Meaning |
 |---|---|---|
 | `STRIKE` | 90% of entry level | Short put strike / conversion level |
-| `RISK_FREE_RATE` | 4% (flat) | SOFR proxy - used for both legs |
-| `GS_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, ZCB leg only |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat | Used for both legs |
+| `GS_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, ZCB leg only, tenor-matched to `TENOR=1` |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -99,7 +100,7 @@ All four are closed-form (verified against finite differences before shipping):
 - **Delta** comes entirely from the short put (`-(1/Strike) * put_delta`) - the ZCB has no
   equity sensitivity at all. Being short a put means positive delta (long-like exposure).
 - **Vega** is `-(1/Strike) * put_vega` - short volatility, since the ZCB has no vega either.
-- **Rho** combines the ZCB's bond-duration sensitivity to SOFR with the put's own rho.
+- **Rho** combines the ZCB's bond-duration sensitivity to the 1Y Treasury rate with the put's own rho.
 - **Theta** is positive by construction: the bond "pulls to par" as time passes, and the short
   put decays in the position's favor - both effects push value up over time, which is the whole
   point of an income-generating note like this.
@@ -131,7 +132,7 @@ hardcoded "S&P 500".
 ### `Reverse Convertible.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to today's level (ignoring time value): flat at 0% above the strike, then falling 1:1
   with the index below it. This is **not** what you'd actually receive if the note were sold or
   unwound today - it ignores all remaining time value in the still-live put. The dotted blue line
@@ -145,8 +146,8 @@ hardcoded "S&P 500".
 ### `Greek Sensitivity.png` (the Greeks ladder)
 
 Four panels sharing one x-axis: **spot, as % of S0**, from 60% to 140%. Tenor, strike, the
-funding curve (SOFR + CDS spread) and vol are all pinned at their day-1 values throughout - only
-spot moves. Theta is excluded here on purpose: since tenor never varies across the ladder, a
+funding curve (1Y Treasury rate + CDS spread) and vol are all pinned at their day-1 values
+throughout - only spot moves. Theta is excluded here on purpose: since tenor never varies across the ladder, a
 "time passing" Greek has nothing meaningful to show against a fixed T.
 
 - **Price (% of Par)**: the model value of the redemption component at that spot level.
@@ -158,9 +159,11 @@ spot moves. Theta is excluded here on purpose: since tenor never varies across t
   recomputed at every spot level, and it's always negative here (short volatility: selling the
   put means a vol *increase* hurts you), largest in magnitude near the strike where the put has
   the most optionality, and fading toward zero far from it.
-- **Rho (per 1% change in SOFR)**: percentage points of par the note's value moves for a
-  1-percentage-point move in the risk-free rate. Worked example: a reading of **≈ -0.0069 at
-  spot=100%** means "if SOFR rose from 4% to 5% right now, index unchanged, the note's model value
+- **Rho (per 1% change in the 1Y Treasury rate)**: percentage points of par the note's value moves
+  for a 1-percentage-point move in the risk-free rate (now the 1Y Treasury CMT, FRED `DGS1`, as of
+  `ENTRY_DATE` - real and historical, held flat for the note's life, rather than a hand-set
+  number). Worked example: a reading of **≈ -0.0069 at spot=100%** means "if the 1Y Treasury rate
+  rose by 1 percentage point (e.g. 4% to 5%) right now, index unchanged, the note's model value
   would fall by about 0.69 percentage points of par" - roughly $6.90 on a $1,000-par note. It's
   small and negative because the ZCB leg's bond-duration effect (higher rates → lower present
   value of the principal) outweighs the smaller, opposite-signed rho contributed by the short

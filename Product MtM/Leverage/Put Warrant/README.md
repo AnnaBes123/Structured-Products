@@ -64,6 +64,9 @@ the opposite sign of their effect on the Call Warrant.
 There is no ZCB leg and no issuer credit spread anywhere in this product — there's no principal
 being lent to an issuer for credit risk to attach to. The put itself is priced with risk-neutral
 pricing at `RISK_FREE_RATE` alone, same as the option legs in every other product in this repo.
+`RISK_FREE_RATE` is the 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat for the note's
+life - real and historical, but still a single point on the curve, not a bootstrapped term
+structure.
 
 ## Why this product isn't expressed as "% of par"
 
@@ -86,7 +89,7 @@ left axis, for the same reason given in the Call Warrant README.
 | Term | Default | Meaning |
 |---|---|---|
 | `STRIKE` | 100% of entry level | Put strike (at the money) |
-| `RISK_FREE_RATE` | 4% (flat) | Used for pricing the put |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, flat | Used for pricing the put |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - index (no dividend) or stock (real dividend yield fetched), drives the display name too |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 

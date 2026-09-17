@@ -76,10 +76,12 @@ every chart title, axis label, and print statement, regardless of which kind of 
 
 ## Discounting
 
-- **ZCB leg** — discounted at `Principal / (1 + SOFR + issuer credit spread)^T`, using the
-  Goldman Sachs 5y CDS spread, same convention as every other principal-at-risk-of-issuer-default
+- **ZCB leg** — discounted at `Principal * e^(-(risk-free rate + issuer credit spread) * T)`
+  (continuous compounding, matching QuantLib's own `FlatForward` term structures), using the
+  Goldman Sachs 1y CDS spread (26.75 bps, Investing.com), same convention as every other principal-at-risk-of-issuer-default
   product in this repo.
-- **Call leg** — priced with risk-neutral pricing at **SOFR alone**, no credit spread.
+- **Call leg** — priced with risk-neutral pricing at the **risk-free rate alone**, no credit
+  spread.
 
 ## Product terms
 
@@ -87,8 +89,8 @@ every chart title, axis label, and print statement, regardless of which kind of 
 |---|---|---|
 | `STRIKE` | 100% of entry level | Long call strike (at the money) |
 | `PARTICIPATION_RATE` | 80% | Quantity of the ATM call - set by hand, not usually 1:1 |
-| `RISK_FREE_RATE` | 4% (flat) | SOFR proxy - used for both legs |
-| `GS_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, ZCB leg only |
+| `RISK_FREE_RATE` | `fetch_risk_free_rate(ENTRY_DATE)` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat for the note's life - real and historical, but still a single point on the curve, not a bootstrapped term structure. Used for both legs. |
+| `GS_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, ZCB leg only, tenor-matched to `TENOR=1` |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - index (no dividend) or stock (real dividend yield fetched), drives the display name too |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -99,7 +101,7 @@ participation rate, change the underlying, or change the window.
 
 Running `Capital Protected Note.py` prints the resolved underlying name and dividend yield,
 entry/maturity levels, realized returns, the note's model value at inception (as % of par), and
-its Greeks — then saves a chart with the underlying's price and the note's Redemption Payoff (Relative to Par)
+its Greeks — then saves a chart with the underlying's price and the note's Payoff If Settled Today (Relative to Par)
 on the left axis and the note's model value on its own right-hand axis, with a dotted blue line
 marking the strike.
 
@@ -111,7 +113,7 @@ vol and the funding curve held fixed, only spot varies.
 ### `Capital Protected Note.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to each day's spot, `PARTICIPATION_RATE * max(S - Strike, 0) / S0` (flat at 0% below the
   strike, rising at `PARTICIPATION_RATE`x the index's own pace above it). This is **not** what
   you'd actually receive if the note were sold or unwound on that date - it ignores all remaining

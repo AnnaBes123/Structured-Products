@@ -25,6 +25,7 @@ from _common import (
     realized_annualized_vol,
     max_drawdown,
     _quantlib_process,
+    fetch_risk_free_rate,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,15 +41,18 @@ CAP = None                    # resolved from DISCOUNT at runtime (needs S0/vol/
                                # once the historical path and vol surface are fetched) - see
                                # __main__. Left as None here so an accidental import-time read
                                # fails loudly instead of silently using a stale/wrong cap.
-RISK_FREE_RATE = 0.04
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
+RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
 
 TICKER = "MCD"
-FRED_SERIES = "SP500"
+SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
+                             # is literally "^GSPC"; never used as a stand-in for a
+                             # single-name stock's own price
 
-VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
+SPX_VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}  # SPX-only proxy;
+                                                                            # only used when TICKER is an index (see below)
 VIX_FRED_SERIES = "VIXCLS"
 
 SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt steps
@@ -57,7 +61,7 @@ SPOT_SCENARIO_RANGE = np.arange(0.60, 1.41, 0.05)  # 60% to 140% of S0, in 5pt s
 def fetch_index_path(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
-    path = fetch_daily_closes(TICKER, start, end, fred_series=FRED_SERIES)
+    path = fetch_daily_closes(TICKER, start, end, fred_series=SPX_FRED_SERIES if TICKER == "^GSPC" else None)
     if path.index[-1] < end - pd.Timedelta(days=10):
         raise RuntimeError(
             f"Requested window {start.date()} to {end.date()} extends past the last available "
@@ -68,12 +72,12 @@ def fetch_index_path(entry_date, years=TENOR):
     return path
 
 
-def fetch_vol_term_structure(entry_date, years=TENOR):
+def fetch_spx_vol_term_structure(entry_date, years=TENOR):
     start = pd.Timestamp(entry_date)
     end = start + pd.Timedelta(days=round(years * 365.25))
 
     term_structure = {}
-    for ticker, tenor_days in VOL_TERM_STRUCTURE_TICKERS.items():
+    for ticker, tenor_days in SPX_VOL_TERM_STRUCTURE_TICKERS.items():
         fred_series = VIX_FRED_SERIES if ticker == "^VIX" else None
         try:
             series = fetch_daily_closes(ticker, start, end, fred_series=fred_series)
@@ -176,7 +180,7 @@ def plot_path(path, S0, underlying_name, mtm_vol_term_structure=None, greeks=Non
             label=underlying_name)
     ax.tick_params(axis="y", labelcolor="firebrick")
     ax.plot(cert_return_pct.index, cert_return_pct.values, color="indianred", linewidth=1.5,
-            linestyle="dashed", label="Discount Certificate Redemption Payoff (Relative to Par)")
+            linestyle="dashed", label="Discount Certificate Payoff If Settled Today (Relative to Par)")
 
     ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
     ax.axhline(0, color="lightgrey", linewidth=0.8)
@@ -244,7 +248,7 @@ if __name__ == "__main__":
 
     if TICKER.startswith("^"):
         print(f"\nFetching SPX implied vol term structure (VIX/VIX3M/VIX6M) for the same window...")
-        raw_term_structure = fetch_vol_term_structure(ENTRY_DATE)
+        raw_term_structure = fetch_spx_vol_term_structure(ENTRY_DATE)
         vol_term_structure = {
             tenor: series.reindex(path.index).ffill().bfill()
             for tenor, series in raw_term_structure.items()

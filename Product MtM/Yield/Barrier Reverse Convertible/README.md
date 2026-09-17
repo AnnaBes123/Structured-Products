@@ -76,14 +76,15 @@ and all three verification checks worked out in formulas.**
 
 ## Discounting: two different rates for two different risks
 
-- **ZCB leg** — discounted at `Principal / (1 + SOFR + issuer credit spread)^T`. This is where
+- **ZCB leg** — discounted at `Principal * e^(-(1Y Treasury rate + issuer credit spread) * T)`
+  (continuous compounding, matching QuantLib's own `FlatForward` term structures). This is where
   the investor is exposed to the **issuer's own default risk** (a barrier reverse convertible is
   unsecured debt of whichever bank issues it), so the discount rate includes that bank's credit
   spread on top of the risk-free rate.
 - **Put leg** — priced via **QuantLib** (CRR lattice for the barrier feature, closed-form
-  Black-Scholes-Merton once breached) at **SOFR alone**, no credit spread. A bank prices and
-  hedges the option on standard derivative-pricing terms, not its own funding curve — the
-  credit-risk premium belongs entirely to the bond leg, not the option leg.
+  Black-Scholes-Merton once breached) at **the 1Y Treasury rate alone**, no credit spread. A bank
+  prices and hedges the option on standard derivative-pricing terms, not its own funding curve —
+  the credit-risk premium belongs entirely to the bond leg, not the option leg.
 
 ## Underlying selection: ticker, dividends, and labels
 
@@ -110,8 +111,8 @@ touching:
 |---|---|---|
 | `STRIKE` | 90% of entry level | Short put strike / conversion level |
 | `BARRIER` | 70% of entry level | Down-and-in barrier (H) for the embedded put, checked once per trading day (CRR lattice) |
-| `RISK_FREE_RATE` | 4% (flat) | SOFR proxy - used for both legs |
-| `GS_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, ZCB leg only |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat | Used for both legs |
+| `GS_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, ZCB leg only, tenor-matched to `TENOR=1` |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -179,7 +180,7 @@ spot.
 ### `Barrier Reverse Convertible.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to today's level, flat at 0% unless the barrier has *already* been touched in this path
   AND today's level is below the strike (see the down-and-in payoff logic above) - it can stay
   flat even well below the strike, right up until the moment the barrier is actually touched.
@@ -210,10 +211,13 @@ being sampled by the bump, not a plotting bug.
   sign near the barrier, since a vol increase here has two competing effects - it raises the
   chance of ever touching the barrier (bad, since that activates the put) but also changes the
   value of the put once it's live - which effect wins depends on exactly where spot sits.
-- **Rho (per 1% change in SOFR)**: percentage points of par per 1-percentage-point rate move.
-  Worked example: a reading of **≈ -0.0081 at spot=100%** means "if SOFR rose from 4% to 5%
-  right now, index unchanged, barrier not yet touched, the note's model value would fall by about
-  0.81 percentage points of par" - roughly $8.10 on a $1,000-par note. Negative for the same
+- **Rho (per 1% change in the 1Y Treasury rate)**: percentage points of par per 1-percentage-point
+  rate move (the risk-free rate here is the 1Y Treasury CMT, FRED `DGS1`, as of `ENTRY_DATE` -
+  real and historical, held flat for the note's life, rather than a hand-set number). Worked
+  example: a reading of **≈ -0.0081 at spot=100%** means "if the 1Y Treasury rate rose by 1
+  percentage point (e.g. 4% to 5%) right now, index unchanged, barrier not yet touched, the note's
+  model value would fall by about 0.81 percentage points of par" - roughly $8.10 on a $1,000-par
+  note. Negative for the same
   reason as the plain Reverse Convertible: the ZCB leg's bond-duration effect dominates the
   smaller offsetting rho from the short (barrier-contingent) put.
 

@@ -6,7 +6,7 @@ gains above that strike. Defaults to the S&P 500 (`TICKER = "^GSPC"`), but any s
 or index ticker works - see "Underlying selection" below. It compares two views of the
 certificate's value over the year:
 
-1. **Redemption Payoff (Relative to Par)** — the certificate's payoff formula applied to each
+1. **Payoff If Settled Today (Relative to Par)** — the certificate's payoff formula applied to each
    day's index level, ignoring any time value (as if the certificate matured on that day).
 2. **Model Value** — the certificate's actual value each day, priced as an option portfolio via
    QuantLib, including time value.
@@ -25,7 +25,7 @@ This is a **deterministic historical approximation** — real historical prices,
 |---|---|---|
 | `STRIKE` | 100% of entry level | Below strike, return = index return (1:1) |
 | `OUTPERFORMANCE_PARTICIPATION` | 200% | Above strike, return = participation × index return |
-| `RISK_FREE_RATE` | 4% (flat) | Used only in the option valuation |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE` | Used only in the option valuation |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 | `ENTRY_DATE` / `TENOR` | 2020-01-02 / 1 year | The historical window |
 
@@ -80,9 +80,9 @@ stock. Two things automatically follow from whatever `TICKER` is set to, no othe
 touching:
 
 - **Dividend yield** (`fetch_dividend_yield`): a flat, continuous yield `q`, fed into both the
-  LEPO leg's closed form and QuantLib's process for the ATM call leg - the same simplification
-  level as the flat `RISK_FREE_RATE`. Indices (any `"^"`-prefixed ticker) are treated as paying
-  `q=0`. The fetch prefers yfinance's `trailingAnnualDividendYield` field (already a plain
+  LEPO leg's closed form and QuantLib's process for the ATM call leg - held flat for the note's
+  life the same way `RISK_FREE_RATE` is (see Assumptions and simplifications below). Indices
+  (any `"^"`-prefixed ticker) are treated as paying `q=0`. The fetch prefers yfinance's `trailingAnnualDividendYield` field (already a plain
   fraction) over the differently-scaled `dividendYield` field, which Yahoo has at various times
   returned as a **percentage** rather than a fraction (e.g. `0.33` meaning 0.33%, not 33%) -
   blindly using that field would silently overstate the yield by ~100x. Falls back to
@@ -100,7 +100,9 @@ touching:
   was treated as literally free to fund - for a real dividend-paying stock that gap is now
   properly split between the genuine, unfunded cost of the participation rate and the LEPO leg's
   own dividend drag.
-- **Flat 4% risk-free rate**, not a historical rate curve.
+- **`RISK_FREE_RATE` is the 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat for the
+  note's life** - real and historical, but still a single point on the curve, not a bootstrapped
+  term structure.
 - **No fees.**
 - **European exercise**, no early exercise or path-dependent features.
 

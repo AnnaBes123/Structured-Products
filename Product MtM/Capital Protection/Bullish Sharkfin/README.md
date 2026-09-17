@@ -119,13 +119,15 @@ touching:
 
 ## Discounting: two different rates for two different risks
 
-- **ZCB leg** — discounted at `Principal / (1 + SOFR + issuer credit spread)^T`. This is where
+- **ZCB leg** — discounted at `Principal * e^(-(risk-free rate + issuer credit spread) * T)`
+  (continuous compounding, matching QuantLib's own `FlatForward` term structures). This is where
   the investor is exposed to the **issuer's own default risk** (a Bullish Sharkfin is unsecured
   debt of whichever bank issues it), so the discount rate includes that bank's credit spread on
-  top of the risk-free rate. Uses the Goldman Sachs 5y CDS spread, same as every other
+  top of the risk-free rate. Uses the Goldman Sachs 1y CDS spread (26.75 bps, Investing.com), same as every other
   principal-at-risk-of-issuer-default product in this repo.
-- **Call leg** — priced with risk-neutral pricing at **SOFR alone**, no credit spread. A bank
-  prices and hedges the option on standard derivative-pricing terms, not its own funding curve.
+- **Call leg** — priced with risk-neutral pricing at the **risk-free rate alone**, no credit
+  spread. A bank prices and hedges the option on standard derivative-pricing terms, not its own
+  funding curve.
 
 ## Product terms
 
@@ -134,8 +136,8 @@ touching:
 | `STRIKE` | 100% of entry level | Long call strike (at the money) |
 | `BARRIER` | 120% of entry level | Up-and-out barrier (H) for the embedded call, checked once per trading day (CRR lattice) |
 | `REBATE` | 0.0 | Cash paid immediately if the barrier is touched, in underlying currency (not a fraction of S0) - set by hand, not economically important for MtM purposes |
-| `RISK_FREE_RATE` | 4% (flat) | SOFR proxy - used for both legs |
-| `GS_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, ZCB leg only |
+| `RISK_FREE_RATE` | `fetch_risk_free_rate(ENTRY_DATE)` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat for the note's life - real and historical, but still a single point on the curve, not a bootstrapped term structure. Used for both legs. |
+| `GS_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, ZCB leg only, tenor-matched to `TENOR=1` |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -173,7 +175,7 @@ spot.
 ### `Bullish Sharkfin.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to each day's spot (flat at 0% below the strike, tracking the index 1:1 above it, as
   long as never breached). This is **not** what you'd actually receive if the note were sold or
   unwound on that date - it ignores all remaining time value in the still-live call. It's the

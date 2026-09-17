@@ -103,9 +103,9 @@ stock. Two things automatically follow from whatever `TICKER` is set to, no othe
 touching:
 
 - **Dividend yield** (`fetch_dividend_yield`): a flat, continuous yield `q`, fed into both legs
-  (the LEPO leg's closed form and the down-and-out put's CRR lattice) - the same simplification
-  level as the flat `RISK_FREE_RATE`. Indices (any `"^"`-prefixed ticker) are treated as paying
-  `q=0`. The fetch prefers yfinance's `trailingAnnualDividendYield` field (already a plain
+  (the LEPO leg's closed form and the down-and-out put's CRR lattice) - held flat for the note's
+  life the same way `RISK_FREE_RATE` is (see Discounting below). Indices (any `"^"`-prefixed
+  ticker) are treated as paying `q=0`. The fetch prefers yfinance's `trailingAnnualDividendYield` field (already a plain
   fraction) over the differently-scaled `dividendYield` field, which Yahoo has at various times
   returned as a **percentage** rather than a fraction (e.g. `0.33` meaning 0.33%, not 33%) -
   blindly using that field would silently overstate the yield by ~100x. Falls back to
@@ -123,6 +123,9 @@ that returns principal at maturity, it's a pure combination of equity-linked leg
 same family as the plain `Outperformance`, `Bonus-Outperfomance`, and `Discount
 Certificate` products. Every leg is priced at `RISK_FREE_RATE` alone; there is no issuer credit
 spread to apply, since there is no bond leg for issuer default risk to attach to.
+`RISK_FREE_RATE` is fetched from FRED's `DGS1` series (1-Year Treasury Constant Maturity Rate)
+as of `ENTRY_DATE` and held flat for the note's life - real and historical, but still a single
+point on the curve, not a bootstrapped term structure.
 
 ## Product terms
 
@@ -131,7 +134,7 @@ spread to apply, since there is no bond leg for issuer default risk to attach to
 | `STRIKE` | 100% of entry level | Initial fixing / reference level - doesn't enter the payoff directly, just the anchor `BARRIER`/`BONUS_LEVEL` are quoted against |
 | `BONUS_LEVEL` | 100% of entry level | Down-and-out put strike / guaranteed minimum redemption if never breached |
 | `BARRIER` | 80% of entry level | Down-and-out barrier (H) for the embedded put, checked once per trading day (CRR lattice) |
-| `RISK_FREE_RATE` | 4% (flat) | Used for every leg |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE` | Used for every leg |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 

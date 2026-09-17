@@ -21,6 +21,7 @@ from _common import (
     fetch_underlying_name,
     _quantlib_process,
     zcb_price_and_greeks,
+    fetch_risk_free_rate,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -28,11 +29,11 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 
 # --- Same product terms as "Multi-RC.py" in this folder ---
 STRIKE = 0.90
-RISK_FREE_RATE = 0.04
-GS_CDS_SPREAD = 0.005308
+GS_CDS_SPREAD = 0.002675       # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - tenor-matched to TENOR=1
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
+RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
 
 TICKERS = ["AAPL", "JPM", "XOM"]
 CORRELATION_LOOKBACK_YEARS = 2
@@ -192,7 +193,7 @@ def plot_greek_sensitivity(table, tickers, T, r, underlying_names):
     ax.axvline(100, color="lightgrey", linewidth=0.8, linestyle="dashed")
     ax.axvline(STRIKE * 100, color="dodgerblue", linewidth=0.8, linestyle="dotted")
     ax.axhline(0, color="lightgrey", linewidth=0.6)
-    ax.set_title("Rho (per 1% change in SOFR)")
+    ax.set_title("Rho (per 1% change in the 1Y Treasury rate)")
     ax.set_xlabel("Spot (% of S0, all names shocked together)")
     ax.set_ylabel("Rho")
     ax.grid(True, color="lightgrey", linewidth=0.4)
@@ -239,7 +240,7 @@ if __name__ == "__main__":
         print(f"  {n} ({t}): vol={s:.2%}, dividend yield={q:.2%}")
     print(f"  Strike:          {STRIKE:.0%} of each name's own entry level")
     print(f"  Tenor (T):       {TENOR} year(s)")
-    print(f"  SOFR proxy:      {RISK_FREE_RATE:.2%}")
+    print(f"  1Y Treasury rate: {RISK_FREE_RATE:.2%}")
 
     sensitivity = greek_sensitivity_table(TENOR, sigmas, dividend_yields, corr_matrix, TICKERS)
     print(f"\nGreeks Ladder (QuantLib MCEuropeanBasketEngine finite differences, common random numbers):")

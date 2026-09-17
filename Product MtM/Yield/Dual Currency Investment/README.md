@@ -86,10 +86,12 @@ derivation of why the quantity is `1/STRIKE`, not `1x`). In value terms:
 
 ## Discounting and option pricing: two different rates for two different risks
 
-- **Deposit leg** — discounted at `Principal / (1 + DEPOSIT_RATE + ISSUER_CDS_SPREAD)^T`. The
+- **Deposit leg** — discounted at `Principal * e^(-(DEPOSIT_RATE + ISSUER_CDS_SPREAD) * T)`
+  (continuous compounding, matching QuantLib's own `FlatForward` term structures). The
   investor is exposed to the deposit-taking bank's own default risk, same reasoning as the RC's
-  ZCB leg — reuses the same real, sourced Goldman Sachs 5y CDS spread (53.08 bps) as an
-  illustrative counterparty; replace it if modeling a different bank.
+  ZCB leg — reuses the same real, sourced Goldman Sachs 1y CDS spread (26.75 bps, Investing.com)
+  as an illustrative counterparty; replace it if modeling a different bank. Still not an exact
+  tenor match for this product's 3-month `TENOR`, but closer than the 5y CDS this used to be.
 - **Put leg** — priced via **QuantLib** (`AnalyticEuropeanEngine`, closed-form
   Black-Scholes-Merton with `q = ALT_RATE`), at `DEPOSIT_RATE` alone, no credit spread — same
   reasoning as the RC: a bank prices/hedges the option on standard derivative terms, not its own
@@ -123,7 +125,7 @@ real input in this repo (e.g. the flat `RISK_FREE_RATE`).
 | `DEPOSIT_CCY` / `ALT_CCY` | USD / EUR | Deposit currency / currency the put is sold on |
 | `DEPOSIT_RATE` | 4% (flat) | DEPOSIT currency short-term rate assumption |
 | `ALT_RATE` | 2% (flat) | ALT currency short-term rate assumption |
-| `ISSUER_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, deposit leg only |
+| `ISSUER_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, deposit leg only |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 3 months | The historical window - DCIs are typically short-dated (days to a few months), unlike the 1-year convention used elsewhere in this repo |
 
 Edit the constants at the top of `DCI.py` to reprice the note, change the currency pair, or change
@@ -147,11 +149,16 @@ payoff, the model value at inception (as % of par), and its Greeks - then saves 
 
 ## Reading the chart
 
-- **Left axis, firebrick line** — the raw FX rate **level** (DEPOSIT per 1 ALT unit), not a %
-  return - an exchange rate isn't a return the way a stock price is, even though a % change looks
-  similar. A dotted blue line marks the strike level.
-- **Right axis** — the note's own figures, both genuinely "return"-like so they share an axis: the
-  dashed Redemption Payoff (Relative to Par) tracker, and the solid model value (% of par).
+Same layout as every other product's chart in this repo (e.g. the Reverse Convertible's) - see
+that folder's README if this is your first time reading one of these.
+
+- **Left axis, firebrick line** — the pair's own return from entry (%), e.g. how much EUR has
+  moved against USD. A dotted blue line marks the strike level, also in return terms.
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the
+  terminal payoff formula applied to today's level (ignoring time value): flat at 0% above the
+  strike, falling 1:1 with the pair below it.
+- **Right axis, solid darkred line** — the model value (% of par, Garman-Kohlhagen), converging
+  onto the tracker line exactly at maturity.
 
 ## Usage
 

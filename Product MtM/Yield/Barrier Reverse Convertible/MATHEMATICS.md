@@ -5,9 +5,9 @@ derivation are identical to the plain Reverse Convertible's - see
 `../Fixed Coupon Note/MATHEMATICS.md` sections 1 and 3. This file covers what's specific to the
 **down-and-in barrier** put.
 
-Notation: `S0` = spot at inception, `K = Strike · S0`, `H = Barrier · S0` (`H < K`), `r` = SOFR
-proxy, `c` = issuer CDS spread, `q` = dividend yield, `T` = time to maturity, `σ` = volatility,
-`N` = CRR lattice step count.
+Notation: `S0` = spot at inception, `K = Strike · S0`, `H = Barrier · S0` (`H < K`), `r` = the 1Y
+Treasury rate (FRED `DGS1` as of `ENTRY_DATE`), `c` = issuer CDS spread, `q` = dividend yield,
+`T` = time to maturity, `σ` = volatility, `N` = CRR lattice step count.
 
 ---
 

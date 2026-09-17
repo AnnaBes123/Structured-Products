@@ -37,7 +37,7 @@ ALT_CCY = "EUR"               # the currency the put is sold on
 DEPOSIT_RATE = 0.04              # DEPOSIT currency short-term rate ("r") - flat assumption, see README
 ALT_RATE = 0.02                # ALT currency short-term rate ("q" in Garman-Kohlhagen)
 
-ISSUER_CDS_SPREAD = 0.005308  # Goldman Sachs 5y CDS - deposit-taking bank's credit risk
+ISSUER_CDS_SPREAD = 0.002675  # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - deposit-taking bank's credit risk; still not an exact tenor match for this product's TENOR=0.25, but closer than the 5y CDS this used to be
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 0.25                  # 3 months - DCIs are typically short-dated
@@ -123,7 +123,7 @@ def dci_mtm(S, S0, T_remaining, sigma, r=DEPOSIT_RATE, alt_rate=ALT_RATE, credit
 
 
 def dci_running_return(S0, path):
-    """Redemption Payoff (Relative to Par) - see README "Reading the
+    """Payoff If Settled Today (Relative to Par) - see README "Reading the
     charts" for what this tracker does and doesn't represent."""
     strike_level = STRIKE * S0
     below_strike = path < strike_level
@@ -142,43 +142,30 @@ def dci_mtm_price_series(S0, path, sigma, r=DEPOSIT_RATE, alt_rate=ALT_RATE):
 
 
 def plot_path(path, S0, pair_label, sigma=None, greeks=None):
-    """Left axis: raw FX rate LEVEL, not a % return. Right axis: the
-    note's own % of par figures. See README "Reading the chart"."""
-    strike_level = STRIKE * S0
+    """Standardized to the same layout as every other product's chart
+    (see e.g. Reverse Convertible's plot_path) - left axis is the pair's
+    own % return from entry, not a raw FX level. See README "Reading the
+    chart"."""
+    pair_return_pct = (path / S0 - 1) * 100
     dci_return_pct = dci_running_return(S0, path) * 100
-    S_T = float(path.iloc[-1])
-    exercised = S_T < strike_level
 
     _, ax = plt.subplots(figsize=(18, 8))
-    ax.plot(path.index, path.values, color="firebrick", linewidth=1.5,
-            label=f"{pair_label} spot (level)")
+    ax.plot(pair_return_pct.index, pair_return_pct.values, color="firebrick", linewidth=1.5,
+            label=f"{pair_label} Return from Entry (%)")
     ax.tick_params(axis="y", labelcolor="firebrick")
+    ax.plot(dci_return_pct.index, dci_return_pct.values, color="indianred", linewidth=1.5,
+            linestyle="dashed", label="DCI Payoff If Settled Today (Relative to Par)")
 
-    # European, not American/barrier: only S_T (the terminal marker below)
-    # vs. the strike decides the outcome - nothing that happens mid-path
-    # matters. The strike is drawn faint and full-width purely as a visual
-    # reference level, and solid/bold only over the last ~8% of the window
-    # (where the comparison actually happens) so it doesn't read as a
-    # continuously-monitored barrier.
-    ax.axhline(strike_level, color="dodgerblue", linewidth=0.5, linestyle="dotted", alpha=0.5)
-    x0, x1 = path.index[0], path.index[-1]
-    emphasis_start = x0 + (x1 - x0) * 0.92
-    ax.hlines(strike_level, emphasis_start, x1, color="dodgerblue", linewidth=2.2, linestyle="solid")
-    ax.text(0.01, strike_level, f"Put Strike: {strike_level:.4f}  (compared to spot ONLY at maturity - "
-            f"European, not a continuous barrier)", transform=ax.get_yaxis_transform(),
+    ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
+    ax.axhline(0, color="lightgrey", linewidth=0.8)
+    strike_pct = (STRIKE - 1) * 100
+    ax.axhline(strike_pct, color="dodgerblue", linewidth=0.8, linestyle="dotted")
+    ax.text(0.01, strike_pct, f"Put Strike: {strike_pct:.1f}%", transform=ax.get_yaxis_transform(),
             color="dodgerblue", fontsize=9, va="bottom", ha="left")
-    ax.scatter([x1], [S_T], color=("firebrick" if exercised else "seagreen"), s=70, zorder=5,
-               label=f"S_T = {S_T:.4f} ({'below strike - exercised' if exercised else 'at/above strike - worthless'})")
     ax.set_xlabel("Date")
-    ax.set_ylabel(f"{pair_label} Spot Rate ({DEPOSIT_CCY} per 1 {ALT_CCY})", color="firebrick")
+    ax.set_ylabel("Return from Entry (%)", color="firebrick")
+    lines, labels = ax.get_legend_handles_labels()
     ax.margins(x=0, y=0.05)
-
-    ax2 = ax.twinx()
-    l1, = ax2.plot(dci_return_pct.index, dci_return_pct.values, color="indianred", linewidth=1.5,
-                    linestyle="dashed", label="DCI Redemption Payoff (Relative to Par) (% of Par)")
-    ax_lines, ax_labels = ax.get_legend_handles_labels()
-    lines = ax_lines + [l1]
-    labels = ax_labels + [l1.get_label()]
 
     if greeks is not None:
         greeks_text = (
@@ -188,31 +175,32 @@ def plot_path(path, S0, pair_label, sigma=None, greeks=None):
             f"ρ (Rho):   {greeks['rho'] / S0 * 0.01:.4f} per 1% change in {DEPOSIT_CCY} rate\n"
             f"θ (Theta): {greeks['theta'] / S0:.4f} per year"
         )
-        ax.text(1.08, 0.5, greeks_text, transform=ax.transAxes,
+        ax.text(1.06, 0.5, greeks_text, transform=ax.transAxes,
                 fontsize=12, fontweight="light", color="black", va="center", ha="left")
 
     if sigma is not None:
         mtm_price = dci_mtm_price_series(S0, path, sigma)
         mtm_gain_over_par_pct = (mtm_price / S0 - 1) * 100
 
+        ax2 = ax.twinx()
         mtm_line, = ax2.plot(
             mtm_gain_over_par_pct.index, mtm_gain_over_par_pct.values, color="darkred", linewidth=1.5,
             linestyle="solid", label="DCI — Model Value (% of Par, Garman-Kohlhagen)")
+        ax2.set_ylabel("Model Value vs. Par (%)", color="darkred", rotation=270, labelpad=10)
+        ax2.tick_params(axis="y", labelcolor="darkred")
+
+        combined_min = min(pair_return_pct.min(), dci_return_pct.min(), mtm_gain_over_par_pct.min(), strike_pct)
+        combined_max = max(pair_return_pct.max(), dci_return_pct.max(), mtm_gain_over_par_pct.max())
+        pad = (combined_max - combined_min) * 0.05
+        ax.set_ylim(combined_min - pad, combined_max + pad)
+        ax2.set_ylim(combined_min - pad, combined_max + pad)
+
         lines.append(mtm_line)
         labels.append(mtm_line.get_label())
 
-        combined_min = min(dci_return_pct.min(), mtm_gain_over_par_pct.min())
-        combined_max = max(dci_return_pct.max(), mtm_gain_over_par_pct.max())
-        pad = (combined_max - combined_min) * 0.05 if combined_max > combined_min else 1.0
-        ax2.set_ylim(combined_min - pad, combined_max + pad)
-
-    ax2.set_ylabel("Note Return (% of Par)", color="darkred", rotation=270, labelpad=15)
-    ax2.tick_params(axis="y", labelcolor="darkred")
-    ax2.axhline(0, color="lightgrey", linewidth=0.6)
-
     end_date = path.index[-1]
-    ax.set_title(f"{pair_label} Spot Path from {path.index[0].date()} to {end_date.date()} \n"
-                 f"vs Model Value vs. Par — Dual Currency Investment")
+    ax.set_title(f"{pair_label} Return Path from {path.index[0].date()} to {end_date.date()} \n"
+                 f"vs Model Value — Dual Currency Investment")
     ax.legend(lines, labels, loc="upper left", fontsize=9)
     plt.tight_layout()
     plt.savefig(OUTPUT_PNG, dpi=150, bbox_inches="tight")
