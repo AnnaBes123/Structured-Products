@@ -5,8 +5,9 @@ Every formula the four scripts in this folder (`Fixed Coupon Note.py`, `Greek Se
 This is the mechanical companion to `README.md` (which covers the "why" and product framing) -
 here the goal is that nothing is left as an unexplained black box in the code itself.
 
-Notation: `S0` = spot at inception, `S_T` = spot at maturity, `K = Strike · S0`, `r` = SOFR proxy,
-`c` = issuer CDS spread, `q` = dividend yield, `T` = time to maturity in years, `σ` = volatility.
+Notation: `S0` = spot at inception, `S_T` = spot at maturity, `K = Strike · S0`, `r` = the 1Y
+Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat for the note's life, `c` = issuer CDS
+spread, `q` = dividend yield, `T` = time to maturity in years, `σ` = volatility.
 
 ---
 

@@ -21,6 +21,7 @@ from _common import (
     fetch_underlying_name,
     _quantlib_process,
     zcb_price_and_greeks,
+    fetch_risk_free_rate,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,11 +30,11 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 # --- Product terms (same base terms as "Reverse Convertible.py", one folder
 # up, plus the worst-of basket feature - see README for the full rationale) ---
 STRIKE = 0.90                  # worst-of put strike, as a fraction of each name's OWN entry level
-RISK_FREE_RATE = 0.04          # SOFR proxy - used for BOTH the ZCB leg and the option leg
-GS_CDS_SPREAD = 0.005308       # Goldman Sachs 5y CDS, 53.08 bps - issuer credit spread, ZCB leg only
+GS_CDS_SPREAD = 0.002675       # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - issuer credit spread, ZCB leg only - tenor-matched to TENOR=1, not the 5y CDS an earlier version of this repo used
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
+RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
 
 TICKERS = ["AAPL", "JPM", "XOM"]  # 3 sectors on purpose - see README "dispersion" discussion
 CORRELATION_LOOKBACK_YEARS = 2   # trailing window ending at ENTRY_DATE, no look-ahead
@@ -178,7 +179,7 @@ def verify_against_closed_form(sigmas, qs, corr_matrix, T, r=RISK_FREE_RATE, n_p
 
 
 def worst_of_running_return(S0_list, price_df):
-    """Redemption Payoff (Relative to Par), worst-of - see README
+    """Payoff If Settled Today (Relative to Par), worst-of - see README
     "Reading the charts"."""
     relative = price_df / pd.Series(S0_list, index=price_df.columns)
     worst_of = relative.min(axis=1)
@@ -250,7 +251,7 @@ def plot_path(price_df, S0_list, tickers, underlying_names, mtm_enabled=True, si
                 linewidth=1.1, alpha=0.85, label=underlying_names[i])
 
     ax.plot(tracker_pct.index, tracker_pct.values, color="indianred", linewidth=1.8,
-            linestyle="dashed", label="Multi-RC Redemption Payoff (Relative to Par) (worst-of)")
+            linestyle="dashed", label="Multi-RC Payoff If Settled Today (Relative to Par) (worst-of)")
 
     ax.grid(True, which="major", color="lightgrey", linewidth=0.6)
     ax.axhline(0, color="lightgrey", linewidth=0.8)
@@ -271,7 +272,7 @@ def plot_path(price_df, S0_list, tickers, underlying_names, mtm_enabled=True, si
             "Greeks at Inception:\n"
             f"Δ (Delta) per name:\n{delta_lines}\n"
             f"ν (Vega) per name (per 1% vol):\n{vega_lines}\n"
-            f"ρ (Rho): {greeks['rho'] * 0.01:.4f} per 1% change in SOFR\n"
+            f"ρ (Rho): {greeks['rho'] * 0.01:.4f} per 1% change in the 1Y Treasury rate\n"
             f"θ (Theta): {greeks['theta']:.4f} per year"
         )
         ax.text(1.16, 0.5, greeks_text, transform=ax.transAxes,
@@ -377,14 +378,14 @@ if __name__ == "__main__":
     fair_value_pct_of_par = greeks["price"]
 
     print(f"\nMulti-RC — model value of redemption component at inception (excludes coupons)")
-    print(f"(QuantLib MCEuropeanBasketEngine, {N_MC_PATHS:,} paths, ZCB discounted at SOFR")
-    print(f"{RISK_FREE_RATE:.2%} + Goldman Sachs CDS {GS_CDS_SPREAD:.2%}, worst-of put at SOFR alone,")
+    print(f"(QuantLib MCEuropeanBasketEngine, {N_MC_PATHS:,} paths, ZCB discounted at the 1Y Treasury rate")
+    print(f"{RISK_FREE_RATE:.2%} + Goldman Sachs CDS {GS_CDS_SPREAD:.2%}, worst-of put at the 1Y Treasury rate alone,")
     print(f"T={TENOR}y, strike={STRIKE:.0%}):")
     print(f"  {fair_value_pct_of_par:.2%} of par ({fair_value_pct_of_par - 1:+.2%} vs. par)")
 
     for t, n, d, v in zip(TICKERS, underlying_names, greeks["deltas"], greeks["vegas"]):
         print(f"  Delta ({n}): {d:.3f}   Vega ({n}, per 1% vol): {v * 0.01:.4f}")
-    print(f"  Rho: {greeks['rho'] * 0.01:.4f}  (per 1% change in SOFR)")
+    print(f"  Rho: {greeks['rho'] * 0.01:.4f}  (per 1% change in the 1Y Treasury rate)")
     print(f"  Theta: {greeks['theta']:.4f} per year / {greeks['theta'] / 365:.5f} per day")
 
     print(f"\nFor comparison, a SINGLE-name Reverse Convertible at the same {STRIKE:.0%} strike on just the worst")

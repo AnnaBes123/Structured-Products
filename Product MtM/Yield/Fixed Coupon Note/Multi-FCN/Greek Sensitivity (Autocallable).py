@@ -18,6 +18,7 @@ from _common import (
     fetch_daily_closes,
     fetch_dividend_yield,
     fetch_underlying_name,
+    fetch_risk_free_rate,
 )
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,11 +28,11 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 STRIKE = 0.90
 TRIGGER = 1.00
 OBS_PER_YEAR = 4
-RISK_FREE_RATE = 0.04
-GS_CDS_SPREAD = 0.005308
+GS_CDS_SPREAD = 0.002675       # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - tenor-matched to TENOR=1
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
+RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; option leg pricing and MC risk-neutral drift
 
 TICKERS = ["AAPL", "JPM", "XOM"]
 CORRELATION_LOOKBACK_YEARS = 2
@@ -224,7 +225,7 @@ def plot_greek_sensitivity(table, tickers, T, r, underlying_names):
     ax.axvline(STRIKE * 100, color="dodgerblue", linewidth=0.8, linestyle="dotted")
     ax.axvline(TRIGGER * 100, color="dodgerblue", linewidth=0.8, linestyle="dotted")
     ax.axhline(0, color="lightgrey", linewidth=0.6)
-    ax.set_title("Rho (per 1% change in SOFR)")
+    ax.set_title("Rho (per 1% change in the 1Y Treasury rate)")
     ax.set_xlabel("Spot (% of S0, all names shocked together)")
     ax.set_ylabel("Rho")
     ax.grid(True, color="lightgrey", linewidth=0.4)
@@ -277,7 +278,7 @@ if __name__ == "__main__":
     print(f"  Strike:            {STRIKE:.0%}")
     print(f"  Autocall trigger:  {TRIGGER:.0%}, checked quarterly ({len(future_call_obs_dates)} obs dates)")
     print(f"  Tenor (T):         {TENOR} year(s)")
-    print(f"  SOFR proxy:        {RISK_FREE_RATE:.2%}")
+    print(f"  1Y Treasury (FRED DGS1): {RISK_FREE_RATE:.2%}")
 
     sensitivity = greek_sensitivity_table(entry_ts, maturity_ts, future_call_obs_dates, sigmas, dividend_yields,
                                            corr_matrix, TICKERS)

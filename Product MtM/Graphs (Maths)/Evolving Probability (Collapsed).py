@@ -21,8 +21,11 @@ MU = 0.04
 K_GRID_PCT = np.linspace(0.70, 1.30, 26)  # 70% to 130% of S0
 
 TICKER = "^GSPC"
-FRED_SERIES = "SP500"
-VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}
+SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
+                             # is literally "^GSPC"; never used as a stand-in for a
+                             # single-name stock's own price
+SPX_VOL_TERM_STRUCTURE_TICKERS = {"^VIX": 30, "^VIX3M": 93, "^VIX6M": 182}  # SPX-only proxy;
+                                                                            # only used when TICKER is an index (see below)
 VIX_FRED_SERIES = "VIXCLS"
 
 
@@ -102,7 +105,7 @@ def sequential_triple_integral(S_t, K1, K2, K3, T1, T2, T3, sigma_t, mu):
 
 
 print(f"Fetching S&P 500 path from {ENTRY_DATE} to {OBS_DATE_1}...")
-close = fetch_daily_closes(TICKER, ENTRY_DATE, OBS_DATE_1, fred_series=FRED_SERIES)
+close = fetch_daily_closes(TICKER, ENTRY_DATE, OBS_DATE_1, fred_series=SPX_FRED_SERIES)
 close = close[close.index < pd.Timestamp(OBS_DATE_1)]  # stop the day before t1 (T1 must stay > 0)
 S0 = float(close.iloc[0])
 K3 = K3_PCT * S0
@@ -110,7 +113,7 @@ K_grid = K_GRID_PCT * S0
 
 print("Fetching VIX / VIX3M / VIX6M term structure for the same window...")
 vol_term_structure = {}
-for ticker, tenor_days in VOL_TERM_STRUCTURE_TICKERS.items():
+for ticker, tenor_days in SPX_VOL_TERM_STRUCTURE_TICKERS.items():
     fred_series = VIX_FRED_SERIES if ticker == "^VIX" else None
     series = fetch_daily_closes(ticker, ENTRY_DATE, OBS_DATE_1, fred_series=fred_series)
     vol_term_structure[tenor_days / 365.25] = (series / 100.0).reindex(close.index).ffill().bfill()

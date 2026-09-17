@@ -127,9 +127,10 @@ this from the single-name products' approach:
 
 ## Discounting
 
-Same split as the single-name RC: the **ZCB leg** is discounted at `SOFR + Goldman Sachs 5y CDS`
-(issuer default risk); the **worst-of put leg** is priced at SOFR alone (a bank prices and hedges
-the option on standard derivative terms, not its own funding curve). `Principal = 1.0` ("par"
+Same split as the single-name RC: the **ZCB leg** is discounted at `1Y Treasury rate + Goldman
+Sachs 1y CDS` (issuer default risk); the **worst-of put leg** is priced at the 1Y Treasury rate
+alone (a bank prices and hedges the option on standard derivative terms, not its own funding
+curve). `Principal = 1.0` ("par"
 units) throughout the code, since there's no single dollar `S0` to anchor to with more than one
 underlying — every other product in this repo converts to "% of par" only for display, this one
 just carries that as the primary unit from the start.
@@ -156,8 +157,8 @@ clock), same as every other product here.
 | `STRIKE` | 90% of each name's own entry level | Worst-of put strike |
 | `TICKERS` | `["AAPL", "JPM", "XOM"]` | The basket - any list of Yahoo Finance tickers |
 | `CORRELATION_LOOKBACK_YEARS` | 2 | Trailing window (ending at `ENTRY_DATE`) used to estimate real vol/correlation - no look-ahead |
-| `RISK_FREE_RATE` | 4% (flat) | SOFR proxy - used for both legs |
-| `GS_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, ZCB leg only |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat | Used for both legs |
+| `GS_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, ZCB leg only, tenor-matched to `TENOR=1` |
 | `N_MC_PATHS` | 50,000 | Monte Carlo path count for `MCEuropeanBasketEngine` |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -173,7 +174,7 @@ the note's model value of the redemption component at inception (as % of par, ex
 with per-name Delta/Vega plus a shared Rho/Theta, and — as a direct sanity check — what each name
 would be worth as a **plain single-name RC** at the same strike, confirming the worst-of figure is
 always lower. It then saves a chart with each basket member's own return path (thin lines), the
-worst-of Redemption Payoff (Relative to Par) (dashed), and the model value on its own right-hand
+worst-of Payoff If Settled Today (Relative to Par) (dashed), and the model value on its own right-hand
 axis.
 
 Running `Greek Sensitivity.py` prints and charts the Greeks ladder: strike, funding curve, and
@@ -189,7 +190,7 @@ needing a separate ladder per name.
 
 - **Thin colored lines** — each basket member's own return from entry (%), one color per name
   (see the legend).
-- **Dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula applied to
+- **Dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula applied to
   each day's worst-of relative performance. Flat at 0% while the worst-of level stays at or above
   the strike, tracking the worst performer 1:1 below it. This is an illustration of the payoff
   formula, **not** what you'd actually receive if the note were sold or unwound today - it ignores
@@ -213,7 +214,7 @@ at their (real, trailing-window) entry values - only the shared shock moves.
   vols and dividend yields differ.
 - **Vega (per name, per 1% vol)**: one line per basket member, always negative (short volatility
   on the worst-of put), largest in magnitude near the strike.
-- **Rho (per 1% change in SOFR)**: a single shared line - negative throughout, the same
+- **Rho (per 1% change in the 1Y Treasury rate)**: a single shared line - negative throughout, the same
   ZCB-bond-duration-dominates-the-put's-own-rho story as every other ZCB-minus-put product
   in this repo.
 

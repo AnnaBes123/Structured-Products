@@ -75,7 +75,7 @@ touching:
 |---|---|---|
 | `DISCOUNT` | 5% | Target discount to spot at inception - the hand-set dial; `CAP` is solved from this |
 | `CAP` | *(resolved)* | Short call strike / upside cap - derived at runtime by `solve_cap_for_discount`, not set by hand |
-| `RISK_FREE_RATE` | 4% (flat) | Used for the option valuation |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat | Used for the option valuation |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -123,7 +123,7 @@ hardcoded "S&P 500".
 ### `Discount Certificate.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to today's level - tracks the index 1:1, then visibly flattens once spot crosses the
   cap (the short call capping the upside).
 - **Right axis, solid darkred line** — the certificate's Black-Scholes model value (% of
@@ -148,8 +148,10 @@ calls, so every Greek is exact closed-form, not finite difference.
   implied vol. **Not a fixed number** - recomputed at every spot, always negative here (short
   the call = short volatility), largest in magnitude near the cap and fading away from it.
 - **Rho (per 1% change in rates)**: percentage points of par moved per 1-percentage-point move
-  in the risk-free rate. Worked example: a reading of **≈ -0.0037 at spot=100%** means "if rates
-  rose from 4% to 5% right now, index unchanged, the certificate's model value would fall by about
+  in the risk-free rate (now the 1Y Treasury CMT, FRED `DGS1`, as of `ENTRY_DATE` - real and
+  historical, held flat for the note's life, rather than a hand-set number). Worked example: a
+  reading of **≈ -0.0037 at spot=100%** means "if the 1Y Treasury rate rose by 1 percentage point
+  (e.g. 4% to 5%) right now, index unchanged, the certificate's model value would fall by about
   0.37 percentage points of par" - roughly $3.70 on a $1,000-par certificate. Small because the
   LEPO leg (long call struck at 0, rho ≈ 0 since it's always exercised - no time-value optionality
   left to be rate-sensitive) and the short call leg's rho largely offset each other.

@@ -37,14 +37,15 @@ loss.
 
 ## Discounting: two different rates for two different risks
 
-- **ZCB leg** — discounted at `Principal / (1 + SOFR + issuer credit spread)^T`. This is where
+- **ZCB leg** — discounted at `Principal * e^(-(risk-free rate + issuer credit spread) * T)`
+  (continuous compounding, matching QuantLib's own `FlatForward` term structures). This is where
   the investor is exposed to the **issuer's own default risk** (an FCN is unsecured debt of
   whichever bank issues it), so the discount rate includes that bank's credit spread on top of
   the risk-free rate.
 - **Put leg** — priced via **QuantLib** (`AnalyticEuropeanEngine`, closed-form
-  Black-Scholes-Merton) at **SOFR alone**, no credit spread. A bank prices and hedges the option
-  on standard derivative-pricing terms, not its own funding curve — the credit-risk premium
-  belongs entirely to the bond leg, not the option leg.
+  Black-Scholes-Merton) at **the risk-free rate alone**, no credit spread. A bank prices and
+  hedges the option on standard derivative-pricing terms, not its own funding curve — the
+  credit-risk premium belongs entirely to the bond leg, not the option leg.
 
 ## Underlying selection: ticker, dividends, and labels
 
@@ -71,8 +72,8 @@ stock - across all four scripts in this folder. Two things automatically follow 
 | Term | Default | Meaning |
 |---|---|---|
 | `STRIKE` | 90% of entry level | Short put strike |
-| `RISK_FREE_RATE` | 4% (flat) | SOFR proxy - used for both legs |
-| `GS_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, ZCB leg only |
+| `RISK_FREE_RATE` | `fetch_risk_free_rate(ENTRY_DATE)` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat for the note's life - real and historical, but still a single point on the curve, not a bootstrapped term structure. Used for both legs. |
+| `GS_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, ZCB leg only, tenor-matched to `TENOR=1` |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -86,7 +87,8 @@ All four are closed-form (verified against finite differences before shipping):
 - **Delta** comes entirely from the short put (`-put_delta`) - the ZCB has no equity
   sensitivity at all. Being short a put means positive delta (long-like exposure).
 - **Vega** is `-put_vega` - short volatility, since the ZCB has no vega either.
-- **Rho** combines the ZCB's bond-duration sensitivity to SOFR with the put's own rho.
+- **Rho** combines the ZCB's bond-duration sensitivity to the risk-free rate with the put's own
+  rho.
 - **Theta** is positive by construction: the bond "pulls to par" as time passes, and the short
   put decays in the position's favor - both effects push value up over time, which is the whole
   point of an income-generating note like this.
@@ -120,7 +122,7 @@ This folder has two products (plain and autocallable) with two charts each.
 ### `Fixed Coupon Note.png` (plain FCN historical approximation)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to each day's spot, flat at 0% above the strike, falling 1:1 with the index below it
   (dotted blue line marks the strike). This is an **illustration of the payoff formula, not** what
   you'd actually receive if the note were sold or unwound on that date - it ignores all remaining
@@ -139,17 +141,21 @@ All four Greeks are exact closed-form here (this note is just ZCB minus a plain 
 - **Vega (per 1% change in vol)**: percentage points of par per 1-percentage-point vol move.
   **Not a fixed number** - recomputed at every spot, always negative (short volatility), largest
   near the strike.
-- **Rho (per 1% change in SOFR)**: percentage points of par per 1-percentage-point rate move.
-  Worked example: **≈ -0.0069 at spot=100%** means a SOFR move from 4% to 5%, index unchanged,
-  costs the note about 0.69 percentage points of par (~$6.90 on $1,000 par) - the ZCB leg's bond
-  duration dominates the smaller, opposite-signed rho from the short put.
+- **Rho (per 1% change in the 1Y Treasury rate)**: percentage points of par per 1-percentage-point
+  rate move. Worked example: **≈ -0.0069 at spot=100%** means a 1-percentage-point rise in the
+  1Y Treasury rate, index unchanged, costs the note about 0.69 percentage points of par (~$6.90 on
+  $1,000 par) - the ZCB leg's bond duration dominates the smaller, opposite-signed rho from the
+  short put.
 
 ### `Fixed Coupon Note (Autocallable).png` (autocallable historical approximation)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to today's level, flat at 0% once the note has actually autocalled in this historical
-  path (see the darkgreen "Autocalled" marker).
+  path (see the darkgreen "Autocalled" marker). This is a rudimentary tracker - an illustration of
+  the payoff formula, **not** what you'd actually receive if the note were sold or unwound today -
+  it ignores all remaining time value in the still-live put. See the right-axis line for the model
+  value estimate.
 - **Left axis, mediumseagreen dotted vertical lines** — every quarterly observation date,
   whether or not it triggered the autocall; a darkgreen dashed line marks the one that actually
   did (if any).

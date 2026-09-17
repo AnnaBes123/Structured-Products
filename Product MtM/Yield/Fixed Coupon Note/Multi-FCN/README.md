@@ -113,9 +113,9 @@ which applies unchanged here.
 ## Discounting
 
 Same split as every ZCB-minus-put product in this repo: the **ZCB/principal leg** at
-`SOFR + Goldman Sachs 5y CDS` (issuer default risk, paid whenever the note actually settles -
-early call or maturity); the **worst-of put leg** at SOFR alone. `Principal = 1.0` ("par" units)
-throughout, same convention as `Multi-RC`.
+`the risk-free rate + Goldman Sachs 1y CDS` (issuer default risk, paid whenever the note actually
+settles - early call or maturity); the **worst-of put leg** at the risk-free rate alone.
+`Principal = 1.0` ("par" units) throughout, same convention as `Multi-RC`.
 
 ## Greeks: a vector, not a scalar - and a note on Rho's noise
 
@@ -141,8 +141,8 @@ would eliminate entirely.
 | `OBS_PER_YEAR` | 4 | Quarterly autocall observation dates |
 | `TICKERS` | `["AAPL", "JPM", "XOM"]` | The basket - same default as `Multi-RC`, any list of Yahoo Finance tickers works |
 | `CORRELATION_LOOKBACK_YEARS` | 2 | Trailing window (ending at `ENTRY_DATE`) for real vol/correlation - no look-ahead |
-| `RISK_FREE_RATE` | 4% (flat) | SOFR proxy |
-| `GS_CDS_SPREAD` | 53.08 bps | Goldman Sachs 5y CDS - issuer credit spread, ZCB leg only |
+| `RISK_FREE_RATE` | `fetch_risk_free_rate(ENTRY_DATE)` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE`, held flat for the note's life - real and historical, but still a single point on the curve, not a bootstrapped term structure |
+| `GS_CDS_SPREAD` | 26.75 bps | Goldman Sachs 1y CDS (Investing.com) - issuer credit spread, ZCB leg only, tenor-matched to `TENOR=1` |
 | `N_MC_PATHS` | 50,000 | Monte Carlo path count |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -159,7 +159,7 @@ model value of the redemption component at inception (excluding coupons) with pe
 and shared Rho/Theta, the empirical probability-of-call from the Monte Carlo, and — as a direct
 sanity check — what the same basket would be worth with no autocall feature at all (`Multi-RC`, in
 effect), confirming the autocallable price is always higher. It then saves a chart with each
-basket member's own return path, the worst-of Redemption Payoff (Relative to Par), quarterly
+basket member's own return path, the worst-of Payoff If Settled Today (Relative to Par), quarterly
 observation-date markers, the actual autocall date (if any), and the model value on its own
 right-hand axis.
 
@@ -174,7 +174,7 @@ ladder.
 ### `Multi-FCN (Autocallable).png` (the historical approximation chart)
 
 - **Thin colored lines** — each basket member's own return from entry (%).
-- **Dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula applied to
+- **Dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula applied to
   each day's worst-of relative performance, flat at 0% once the note has actually autocalled in
   this historical path (see the darkgreen "Autocalled" marker). This is an illustration of the
   payoff formula, **not** what you'd actually receive if the note were sold or unwound today - see
@@ -208,7 +208,7 @@ trailing-window) entry values.
   raises breach risk) but turning positive well above the trigger (more vol there raises the
   *autocall* probability sooner, which is good for the investor - the same sign-flipping-with-
   spot behavior as the single-name Autocallable FCN's own Vega).
-- **Rho (per 1% change in SOFR)**: a single shared line, negative and visibly noisier past the
+- **Rho (per 1% change in the 1Y Treasury rate)**: a single shared line, negative and visibly noisier past the
   trigger - see "Greeks: a vector, not a scalar" above for why that's expected Monte Carlo
   behavior near a discrete autocall boundary, not a bug.
 

@@ -107,7 +107,10 @@ Like the other equity-derivative certificates in this repo (`Outperformance`,
 `Bonus-Outperfomance`, `Bonus Certificate`), there is **no separate principal/ZCB leg** — this
 isn't debt that returns principal at maturity, it's a pure combination of a LEPO and put legs.
 Every leg is priced at `RISK_FREE_RATE` alone; there is no issuer credit spread to apply, since
-there is no bond leg for issuer default risk to attach to.
+there is no bond leg for issuer default risk to attach to. `RISK_FREE_RATE` is fetched from
+FRED's `DGS1` series (1-Year Treasury Constant Maturity Rate) as of `ENTRY_DATE` and held flat
+for the note's life - real and historical, but still a single point on the curve, not a
+bootstrapped term structure.
 
 ## Product terms
 
@@ -116,7 +119,7 @@ there is no bond leg for issuer default risk to attach to.
 | `STRIKE` | 100% of entry level | LEPO reference / down-and-out put strike (at the money) |
 | `BARRIER` | 70% of entry level | Down-and-out barrier (H) for the embedded puts, checked once per trading day (CRR lattice) |
 | `PUT_QUANTITY` | 2.0 | Quantity of the down-and-out put - 2x is what makes the inversion exact; set by hand |
-| `RISK_FREE_RATE` | 4% (flat) | Used for every leg |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE` | Used for every leg |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - index (no dividend) or stock (real dividend yield fetched), drives the display name too |
 | `ENTRY_DATE` / `TENOR` | 2025-01-02 / 1 year | The historical window |
 
@@ -151,7 +154,7 @@ and the risk-free rate held fixed, only spot varies, shown for both barrier stat
 ### `Twin-Win Certificate.png` (the historical approximation chart)
 
 - **Left axis, firebrick line** — the real underlying's return from entry (%).
-- **Left axis, dashed indianred line** — the "Redemption Payoff (Relative to Par)": the terminal payoff formula
+- **Left axis, dashed indianred line** — the "Payoff If Settled Today (Relative to Par)": the terminal payoff formula
   applied to each day's spot. This is **not** what you'd actually receive if the certificate were
   sold or unwound on that date - it ignores all remaining time value in the still-live puts. See
   the right-axis MTM line for the model-value estimate. Above the strike (never breached)

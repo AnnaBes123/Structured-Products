@@ -87,6 +87,25 @@ def interpolate_implied_vol(vols_by_tenor, T_years):
     return points[-1][1]
 
 
+def fetch_risk_free_rate(entry_date, fred_series="DGS1", lookback_days=10):
+    """Most recent FRED DGS1 (1-Year Treasury Constant Maturity Rate) print
+    on or before entry_date - a free, real, historical risk-free proxy
+    whose tenor matches every product here except the Dual Currency
+    Investment (TENOR != 1). Returns a decimal (e.g. 0.0434), not a
+    percentage. See Product MtM/README.md "The Zero Coupon Bond
+    Assumption" for why this replaced a flat hand-set number."""
+    import pandas_datareader.data as web
+    end = pd.Timestamp(entry_date)
+    start = end - pd.Timedelta(days=lookback_days)
+    data = web.DataReader(fred_series, "fred", start, end).dropna()
+    if data.empty:
+        raise RuntimeError(
+            f"No {fred_series} data available from FRED in the {lookback_days} days "
+            f"before {end.date()} - try a larger lookback_days or check the date."
+        )
+    return float(data[fred_series].iloc[-1]) / 100.0
+
+
 def fetch_trailing_realized_vol(ticker, entry_date, lookback_years=2):
     """Single-name vol input: trailing realized vol on the ticker's own
     history (see each product's README "Volatility" section for why, vs.

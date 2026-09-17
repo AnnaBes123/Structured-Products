@@ -9,7 +9,74 @@ barrier product, or Monte Carlo for the autocallable products.
 
 This is a personal, AI-assisted learning project about derivatives/structured-product valuation,
 not a production pricing library and not investment research. See **Scope and limitations**
-below before reading any number here as more than an illustration.
+below before reading any number here as more than an illustration. This file is the reference
+guide (what things are, how to run them); see **[`DEV_LOG.md`](DEV_LOG.md)** for the reasoning,
+open questions, and unresolved thinking behind specific modeling choices.
+
+## How to run
+
+One-time setup, from the repo root (`Structured Products/`):
+
+```
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Then `cd` into whichever product folder you want and run its script directly, e.g.:
+
+```
+cd "Product MtM/Capital Protection/Bearish Sharkfin"
+python3 "Bearish Sharkfin.py"
+```
+
+Every product folder has two scripts, run the same way (`python3 "<name>.py"` from inside that
+folder):
+
+- **`<Product Name>.py`** — the historical backtest. Fetches one real historical price path
+  (`ENTRY_DATE` + `TENOR`, editable at the top of the file), prints a summary (entry/maturity
+  levels, realized return, barrier/autocall state where applicable), runs that product's own
+  `verify_against_closed_form` sanity check (a PASS/FAIL line — read it before trusting the rest
+  of the output), prints the Model Value at inception and its Greeks, and saves a
+  `<Product Name>.png` chart in the same folder.
+- **`Greek Sensitivity.py`** — a Greeks ladder across a range of spot scenarios at fixed terms,
+  saved as `Greek Sensitivity.png`. Self-contained — it does not need the main script run first.
+
+Both scripts fetch their own data live from `yfinance` on every run (needs internet access),
+falling back to FRED for the S&P 500/VIX series where noted — nothing is cached or bundled with
+the repo, so re-running later can return different numbers if the underlying yfinance/FRED data
+has since been revised. To reprice a different note, edit the constants at the top of the file
+(`TICKER`, `ENTRY_DATE`, `TENOR`, `STRIKE`, `BARRIER`, etc.) — see that product's own README
+"Product terms" table for what each one means and its default.
+
+## Layout
+
+- `Capital Protection/` — Bearish/Bullish Sharkfin, Capital Protected Note
+- `Leverage/` — Call Warrant, Put Warrant
+- `Participation/` — Bonus Certificate, Bonus-Outperformance Certificate, Outperformance
+  Certificate, Twin-Win Certificate
+- `Yield/` — Barrier Reverse Convertible, Discount Certificate, Dual Currency Investment, Fixed
+  Coupon Note (plain, Autocallable, Multi-FCN), Reverse Convertible (plain, Multi-RC)
+- `Price Return Basic/`, `Graphs (Maths)/` — supporting reference material, not product valuations
+
+**See [`QUANTLIB.md`](QUANTLIB.md)** for a top-down explanation of the actual QuantLib plumbing
+shared by every product (the process/engine wiring in `_common.py`, the Instrument/PricingEngine
+pattern, and precisely what "barrier checked once per trading day, not continuously" means
+mechanically), sourced from QuantLib's own documentation and source comments rather than
+paraphrase.
+
+**See [`DEV_LOG.md`](DEV_LOG.md)** for the first-person reasoning behind specific assumptions
+(the ZCB/discounting story, the volatility proxy, the Multi-FCN/Multi-RC correlation estimator)
+and what's still open/unresolved about each.
+
+Each product folder has its own README with the specific replication, assumptions, and chart
+guide for that product. Code comments are kept short by design - the six Yield products with
+non-trivial derivations (Fixed Coupon Note/Multi-FCN, Reverse Convertible's Multi-RC, Barrier
+Reverse Convertible, Discount Certificate, Dual Currency Investment) each have a `MATHEMATICS.md`
+alongside their `README.md` with every formula worked out in full; sibling products with
+identical math (the plain Reverse Convertible, the barrier products in Capital Protection/
+Participation) point back to those rather than duplicating them.
+
 
 ## What "Model Value" means here
 
@@ -42,13 +109,12 @@ Every script also distinguishes two things that are easy to mix up:
   bought below par by construction; a warrant's "Warrant Return (on premium paid)" is measured
   against the premium paid, not against the underlying's par level).
 
-The **"Redemption Payoff (Relative to Par)"** line/tracker on every chart is a third, related but
-distinct thing: it's the terminal payoff *formula* applied to today's spot, as if today were
+The **"Payoff If Settled Today (Relative to Par)"** line/tracker on every chart is a third, related but distinct thing: it's the terminal payoff *formula* applied to today's spot, as if today were
 maturity. It is an **illustration of the payoff mechanics, not an amount locked in or realizable
 by selling the note today** — it ignores every bit of remaining time value in the note's embedded
 options, which the Model Value line (see above) does account for. Where a product has a barrier or
 knock-in/knock-out feature, this tracker correctly uses the barrier's full historical state (e.g.
-"has the barrier been touched at any point up to today"), not just today's spot level in isolation.
+"has the barrier been touched at any point up to today"), not just today's spot level in isolation. For example, take a 2:1 participation Outperformance Certificate; the payoff if settled today would simply model the underlying on a 2:1 participation basis (above strike) and converge upon maturity. This is simply an illustrative measure. 
 
 ## Autocall settlement
 
@@ -84,9 +150,17 @@ continuing mark-to-market of an outstanding instrument.
   stock's actual listed options are pricing at any given moment. The Dual Currency Investment
   and Multi-FCN/Multi-RC products use the same realized-vol approach (on FX and per-name
   equity history respectively) for the identical reason.
-- **Rates.** The risk-free rate (SOFR proxy) is a single flat, hand-set number for the life of
-  each trade, not a fetched or bootstrapped curve.
-- **Credit spread.** The issuer credit spread is one real, sourced data point (a Goldman Sachs 5y
+- **Rates.** For every product except the Dual Currency Investment, `RISK_FREE_RATE` is now a
+  real, historical rate - FRED's `DGS1` (1-Year Treasury Constant Maturity Rate) as of
+  `ENTRY_DATE`, fetched via `fetch_risk_free_rate` in `_common.py` - not the flat, hand-set 4% an
+  earlier version of this repo used under a misleading "SOFR proxy" label (it was never actually
+  fetched SOFR data). It's still a single point held flat for the life of the trade, not a
+  bootstrapped curve, and it's a Treasury yield, not literally SOFR - a real but imperfect
+  substitute for a genuine forward-looking term rate, which isn't freely available historically.
+  The Dual Currency Investment's `DEPOSIT_RATE`/`ALT_RATE` are unaffected by this change and
+  remain flat, hand-set numbers - fetching real historical short-term rates for two arbitrary,
+  possibly non-USD currencies is a separate, harder problem not yet tackled.
+- **Credit spread.** The issuer credit spread is one real, sourced data point (a Goldman Sachs 1y
   CDS level) used as an illustrative stand-in for "some investment-grade bank's funding spread,"
   not a spread specific to whichever underlying or currency a given script is configured with.
 - **Dividends.** Dividend yield is a flat, continuous-yield approximation (trailing yield from
@@ -128,21 +202,3 @@ rather than approximated. Treat this as a work in progress under review, not a
 validated or independently-checked pricing tool — if you spot a modeling issue beyond the
 presentation fixes described above, please treat it as a separate, open question rather than an
 already-resolved one.
-
-## Layout
-
-- `Capital Protection/` — Bearish/Bullish Sharkfin, Capital Protected Note
-- `Leverage/` — Call Warrant, Put Warrant
-- `Participation/` — Bonus Certificate, Bonus-Outperformance Certificate, Outperformance
-  Certificate, Twin-Win Certificate
-- `Yield/` — Barrier Reverse Convertible, Discount Certificate, Dual Currency Investment, Fixed
-  Coupon Note (plain, Autocallable, Multi-FCN), Reverse Convertible (plain, Multi-RC)
-- `Price Return Basic/`, `Graphs (Maths)/` — supporting reference material, not product valuations
-
-Each product folder has its own README with the specific replication, assumptions, and chart
-guide for that product. Code comments are kept short by design - the six Yield products with
-non-trivial derivations (Fixed Coupon Note/Multi-FCN, Reverse Convertible's Multi-RC, Barrier
-Reverse Convertible, Discount Certificate, Dual Currency Investment) each have a `MATHEMATICS.md`
-alongside their `README.md` with every formula worked out in full; sibling products with
-identical math (the plain Reverse Convertible, the barrier products in Capital Protection/
-Participation) point back to those rather than duplicating them.

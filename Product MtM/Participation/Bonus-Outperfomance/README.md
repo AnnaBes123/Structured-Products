@@ -42,7 +42,7 @@ ATM call, struck at K = S0) and add:
 | `STRIKE` | 100% of entry level | Certificate strike (K) |
 | `OUTPERFORMANCE_PARTICIPATION` | 200% | Participation above strike |
 | `BARRIER` | 75% of entry level | Down-and-out barrier (H) for the embedded put, checked once per trading day (CRR lattice) |
-| `RISK_FREE_RATE` | 4% (flat) | Used only in the option valuation |
+| `RISK_FREE_RATE` | 1Y Treasury CMT (FRED `DGS1`) as of `ENTRY_DATE` | Used only in the option valuation |
 | `TICKER` | `^GSPC` (S&P 500) | Any Yahoo Finance ticker - drives the dividend yield and display name automatically |
 
 ## Pricing the embedded put — derivation
@@ -96,8 +96,10 @@ touching:
 
 - **Dividend yield** (`fetch_dividend_yield`): a flat, continuous yield `q`, fed into the LEPO
   leg's closed form and into QuantLib's process for both the ATM call and the down-and-out put -
-  the same simplification level as the flat `RISK_FREE_RATE`. Indices (any `"^"`-prefixed
-  ticker) are treated as paying `q=0`. The fetch prefers yfinance's `trailingAnnualDividendYield`
+  held flat for the note's life the same way `RISK_FREE_RATE` is (itself fetched from FRED's
+  `DGS1` series - 1-Year Treasury Constant Maturity Rate - as of `ENTRY_DATE`, real and
+  historical rather than hand-set, though still a single point on the curve, not a bootstrapped
+  term structure). Indices (any `"^"`-prefixed ticker) are treated as paying `q=0`. The fetch prefers yfinance's `trailingAnnualDividendYield`
   field (already a plain fraction) over the differently-scaled `dividendYield` field, which Yahoo
   has at various times returned as a **percentage** rather than a fraction (e.g. `0.33` meaning
   0.33%, not 33%) - blindly using that field would silently overstate the yield by ~100x. Falls
@@ -168,9 +170,10 @@ itself only "Breached" is shown, since you cannot be below the barrier without h
   near the strike/barrier (where optionality is most sensitive to vol) and fades toward the
   edges. Note this is *not* the same 1% as a 1% relative change - it is +1 full volatility point.
 - **Rho (per 1% change in rates)**: how many percentage points of par the certificate's value
-  moves for a 1-percentage-point move in the risk-free rate (e.g. SOFR 4% → 5%), at that spot.
-  Worked example: a reading of **-0.008 at spot=100%** means "if SOFR rose from 4% to 5% right
-  now, with the index unchanged at its entry level, the certificate's model value would fall by
+  moves for a 1-percentage-point move in the risk-free rate (e.g. the 1Y Treasury rate rising 1
+  point), at that spot. Worked example: a reading of **-0.008 at spot=100%** means "if the 1Y
+  Treasury rate rose 1 percentage point right now, with the index unchanged at its entry level,
+  the certificate's model value would fall by
   about 0.8 percentage points of par" — e.g. roughly $8 on a $1,000-par certificate. It's small
   and can be either sign here because the certificate nets a *long* call-heavy position (positive
   rho, since higher rates raise a call's forward value) against a *long* put (negative rho) -
