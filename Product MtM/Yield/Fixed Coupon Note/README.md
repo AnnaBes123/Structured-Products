@@ -181,6 +181,25 @@ Theta is excluded here too, for the same fixed-tenor reason.
   (it can redeem early at the 100% trigger), which shrinks the ZCB leg's effective duration and
   therefore its rate sensitivity.
 
+## Checking an existing FCN
+
+`Fixed Coupon Note.py` (the plain version) can load a real note's terms from `existing_fcns.csv`
+in this folder instead of the hand-set `STRIKE`/`TICKER`/`ENTRY_DATE`/`TENOR` at the top of the
+script, so you don't have to edit the script to check a different note you hold:
+
+- Add a row per note to `existing_fcns.csv` (`id, ticker, strike, entry_date, tenor,
+  gs_cds_spread` - leave `gs_cds_spread` blank to keep the script's default issuer spread).
+- Set `FCN_ID = "<that id>"` near the top of the script and run it - it prints a confirmation
+  line (`Loaded FCN '<id>' from registry: ...`) and proceeds exactly as if you'd hand-set those
+  terms.
+- Set `LIST_EXISTING_FCNS = True` and run the script to just print every registered note's terms
+  and exit, with no network calls - a quick way to see what's there before picking an id.
+- Leave `FCN_ID = None` (the default) to ignore the registry entirely and use the hand-set terms.
+
+Remember this script only handles a **completed historical window** (it errors if
+`ENTRY_DATE`/`TENOR` extend past today), so this is for checking notes that have already reached
+maturity, not for marking a still-live position.
+
 ## Usage
 
 ```

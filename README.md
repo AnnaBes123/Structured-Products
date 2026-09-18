@@ -11,10 +11,13 @@ important not to blur them:
   assumptions?"* Historical mark-to-market illustrations for ~15 structured products (may have more) (capital protection, leverage, participation, and yield/income structures), each replicated as an option portfolio and priced with QuantLib, a CRR lattice, or Monte Carlo along one real historical price path. **Start with [`Product MtM/README.md`](Product%20MtM/README.md)** — it covers the shared terminology ("Model Value" vs. "Redemption Payoff Relative to Par"), what's modeled vs. excluded (coupons, for the yield products), and a full scope-and-limitations section (vol proxies, flat rates, credit spread, dividend treatment, monitoring approximation, numerical
   limitations).
 - **`Estimators/`** — *"What's the actual (real-world) likelihood this happens?"* A physical-measure
-  probability estimator (currently: `FCN Probability Estimator`, including its worst-of/Multi-FCN
-  case) that fits a model to a stock's own historical behavior and simulates forward — a genuinely
-  different question from risk-neutral pricing, not a pricer, and not comparable to the `Product
-  MtM/` numbers without care. See its own [`Estimators/FCN Probability/README.md`](Estimators/FCN%20Probability/README.md) for the real-world-vs-risk-neutral distinction in detail. Of course, this is a naive estimator, meaning it is only there for illustrative purposes and its output should be taken with caution.
+  probability estimator (currently: `P(Breach) Estimator`, a general-purpose tool for any
+  ticker/basket - including a worst-of/Multi-FCN-style basket) that fits a model to a stock's own
+  historical behavior and simulates forward — a genuinely different question from risk-neutral
+  pricing, not a pricer, and not comparable to the `Product MtM/` numbers without care. See its own
+  [`Estimators/P(Breach) Estimator/README.md`](Estimators/P%28Breach%29%20Estimator/README.md) for
+  the real-world-vs-risk-neutral distinction in detail. Of course, this is a naive estimator,
+  meaning it is only there for illustrative purposes and its output should be taken with caution.
 
 Don't mix numbers across these two folders casually: a `Product MtM/` price and an `Estimators/`
 probability are computed under different assumptions (own-vol vs risk-neutrality) for different purposes, even when they share an underlying and a strike.
