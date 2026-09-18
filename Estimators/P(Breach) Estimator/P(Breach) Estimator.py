@@ -1,4 +1,5 @@
 import gc
+import glob
 import os
 import resource
 import warnings
@@ -6,7 +7,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import norm
+from scipy.stats import norm, t as t_dist
 
 from arch import arch_model
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
@@ -25,21 +26,54 @@ except Exception:
     pass  # not available on all platforms - best effort only
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__))[0] + ".png")
+SCRIPT_BASENAME = os.path.splitext(os.path.basename(__file__))[0]
+OUTPUT_PNG = os.path.join(SCRIPT_DIR, SCRIPT_BASENAME + ".png")
 
 # Real-world (physical-measure) probability estimator, not a pricer - see
 # README.md for the full rationale, especially why this deliberately isn't
-# risk-neutral (risk_neutral_comparison() below quantifies the difference).
+# risk-neutral.
 
 # --- Product terms (same STRIKE/ENTRY_DATE/TENOR convention as the plain
 # Fixed Coupon Note.py, one level up in Product MtM/Yield/) ---
-STRIKE = 0.65                  # breach level, as a fraction of each name's own entry level
-ENTRY_DATE = "2026-09-14"
-TENOR = 0.503836
+#
+# PRODUCT_TYPE selects what "breach" means:
+#   - "FCN" / "RC":  European, terminal-only condition (same math either way -
+#     the plain Fixed Coupon Note and Reverse Convertible in this repo are both
+#     a worst-of put struck at STRIKE and only ever looked at, at maturity - no
+#     continuous barrier). "P(breach)" = P(worst-of < STRIKE at maturity).
+#     BARRIER is ignored.
+#   - "BRC": Barrier Reverse Convertible - a genuine down-and-in put, same
+#     structure as ../../Product MtM/Yield/Barrier Reverse Convertible/. The
+#     put only activates if BARRIER is EVER touched (any date from ENTRY_DATE
+#     to maturity, continuously monitored daily); "P(breach)" =
+#     P(barrier ever touched AND worst-of < STRIKE at maturity) - a genuinely
+#     path-dependent, joint condition, not just a terminal one. Requires
+#     0 < BARRIER < STRIKE.
+#   - "GENERIC": no product semantics assumed - reports two independent stats
+#     off the one STRIKE level, exactly as this file always has: P(breach AT
+#     MATURITY) and P(EVER touches STRIKE) along the path. Useful for asking
+#     "how likely is this move, really?" without picking a specific structure.
+#     BARRIER is ignored.
+PRODUCT_TYPE = "GENERIC"
+
+STRIKE = 0.5                  # breach level, as a fraction of each name's own entry level -
+                               # the put strike (FCN/RC/BRC) or just "the level" (GENERIC)
+BARRIER = None                 # BRC only: down-and-in knock-in level, as a fraction of each
+                               # name's own entry level. Must be < STRIKE. Ignored otherwise.
+ENTRY_DATE = "2026-09-17"
+TENOR = 1
+
+if PRODUCT_TYPE not in ("FCN", "RC", "BRC", "GENERIC"):
+    raise ValueError(f"PRODUCT_TYPE must be one of 'FCN', 'RC', 'BRC', 'GENERIC' - got {PRODUCT_TYPE!r}")
+if PRODUCT_TYPE == "BRC" and not (BARRIER is not None and 0 < BARRIER < STRIKE):
+    raise ValueError(f"PRODUCT_TYPE='BRC' requires 0 < BARRIER < STRIKE (got BARRIER={BARRIER!r}, STRIKE={STRIKE!r})")
+
+PRODUCT_LABELS = {"FCN": "Fixed Coupon Note", "RC": "Reverse Convertible",
+                   "BRC": "Barrier Reverse Convertible", "GENERIC": "General Probability Estimator"}
 
 # 1 ticker = single-asset mode. 2+ = basket (worst-of) mode, same convention
 # as Multi-RC / Multi-FCN. Try TICKERS = ["AAPL", "JPM", "XOM"].
-TICKERS = ["COTN.SW", "STMPA.PA"]
+TICKERS = ["CL=F", "BZ=F"]
 
 N_SIMULATIONS = 10000            # Monte Carlo paths per rolling origin date - a "decent" number
                                  # gives ~1.4% standard error on a 50% probability; see
@@ -64,7 +98,30 @@ def _safe_n_sims(requested, basket_mode=False):
         return cap
     return requested
 
-RISK_FREE_RATE = 0.04           # only used in risk_neutral_comparison()
+TRADING_DAYS_PER_YEAR = 252
+CALENDAR_DAYS_PER_YEAR = 365.25
+
+
+def _cleanup_stale_validation_pngs():
+    """Deletes every 'Validation (<ticker>).png' from a PREVIOUS run before
+    this run writes fresh ones - this script is routinely re-run against
+    different ad hoc TICKERS (it's a general P(breach) exploration tool, not
+    tied to one fixed underlying), and per-ticker filenames would otherwise
+    accumulate a stale chart for every ticker ever tried instead of just the
+    current TICKERS."""
+    pattern = os.path.join(SCRIPT_DIR, f"{SCRIPT_BASENAME} - Validation (*).png")
+    for path in glob.glob(pattern):
+        os.remove(path)
+
+
+def _calendar_to_trading_days(calendar_days):
+    """Both the rolling and walk-forward simulations advance one FITTED
+    trading-day return per simulated step, so a horizon expressed in
+    calendar days (as maturity/entry/target dates naturally are) would
+    simulate ~365/252 too many daily shocks - this converts to the
+    equivalent trading-day count instead."""
+    return max(1, round(calendar_days * TRADING_DAYS_PER_YEAR / CALENDAR_DAYS_PER_YEAR))
+
 
 # Markov-switching (statsmodels MarkovRegression) is off by default: its MLE
 # fit computes a numerical Hessian for standard errors, and in testing this
@@ -80,8 +137,10 @@ INCLUDE_MARKOV_SWITCHING = False
 FULL_HISTORY_YEARS = 15         # total real history fetched, ending at ENTRY_DATE
 VALIDATION_YEARS = 3            # most recent slice of that held out as a test period - kept
                                  # deliberately modest (a "decent," not maximal, validation run):
-                                 # each refit/checkpoint fits ~11 models from scratch, so the total
-                                 # cost scales directly with VALIDATION_YEARS / EVAL_FREQUENCY_DAYS
+                                 # each refit/checkpoint fits ~18 GARCH-family models from scratch
+                                 # (3 mean specs x 6 vol specs; +2 more if
+                                 # INCLUDE_MARKOV_SWITCHING), so the total cost scales directly with
+                                 # VALIDATION_YEARS / EVAL_FREQUENCY_DAYS times the size of that grid
 REFIT_FREQUENCY_DAYS = 252      # model fully re-estimated this often (~1y)
 EVAL_FREQUENCY_DAYS = 42        # prediction checkpoint spacing (~2mo)
 
@@ -149,18 +208,32 @@ GARCH_MEAN_SPECS = [
 ]
 
 GARCH_VOL_SPECS = [
+    ("ARCH(1)", dict(vol="ARCH", p=1)),
     ("GARCH(1,1)", dict(vol="GARCH", p=1, o=0, q=1)),
     ("GJR-GARCH(1,1,1)", dict(vol="GARCH", p=1, o=1, q=1)),
     ("EGARCH(1,1,1)", dict(vol="EGARCH", p=1, o=1, q=1)),
+    ("APARCH(1,1,1)", dict(vol="APARCH", p=1, o=1, q=1)),
+    ("FIGARCH(1,1)", dict(vol="FIGARCH", p=1, q=1)),
 ]
+
+# Specs whose fitted parameterization the hand-rolled BASKET one-step
+# recursion (_garch_one_step_variance) can't represent, so they're only
+# offered in single-asset mode: EGARCH's recursion is in log-variance space;
+# APARCH's is in |eps|^delta space with an estimated power delta (not just
+# eps^2); FIGARCH's is a truncated ARCH(inf) expansion parameterized by
+# (phi, d, beta), not (omega, alpha, beta) at all. ARCH(1) needs no entry
+# here - it's just GARCH(1,1) with beta forced to 0, which the basket
+# recursion already handles (see _garch_one_step_variance's use of .get()).
+BASKET_INCOMPATIBLE_VOL_SPECS = {"EGARCH(1,1,1)", "APARCH(1,1,1)", "FIGARCH(1,1)"}
 
 MARKOV_K_REGIMES = [2, 3]
 
 
 def fit_garch_family_candidates(returns_pct, fit_end, basket_mode=False):
-    """Fits every mean x vol combo above (drops EGARCH when basket_mode=True).
+    """Fits every mean x vol combo above (drops BASKET_INCOMPATIBLE_VOL_SPECS
+    when basket_mode=True - see its docstring for why each is excluded).
     Estimation uses only data through fit_end - no look-ahead."""
-    vol_specs = [s for s in GARCH_VOL_SPECS if not (basket_mode and s[0] == "EGARCH(1,1,1)")]
+    vol_specs = [s for s in GARCH_VOL_SPECS if not (basket_mode and s[0] in BASKET_INCOMPATIBLE_VOL_SPECS)]
     candidates = []
     for mean_name, mean_kwargs in GARCH_MEAN_SPECS:
         for vol_name, vol_kwargs in vol_specs:
@@ -244,10 +317,17 @@ def simulate_garch_forward(best, returns_pct, origin_date, horizon_days, n_sims=
     data, so there is exactly one origin to compute."""
     truncated = returns_pct.loc[:origin_date]
     am = arch_model(truncated, dist="t", **best["spec_kwargs"])
+    # Seed the model's OWN fitted Student's-t distribution rather than passing
+    # rng= to .forecast() below: arch's rng= replaces the innovation generator
+    # entirely with whatever callable it's given, bypassing the fitted
+    # distribution's own simulate() (which draws standard_t scaled by the
+    # fitted degrees-of-freedom) in favor of that callable's raw output - a
+    # standard_normal callable there would silently discard the fitted
+    # Student's-t shape and simulate Gaussian innovations instead.
+    am.distribution._generator = np.random.default_rng(seed)
     fixed = am.fix(best["fitted"].params)
     fc = fixed.forecast(horizon=horizon_days, method="simulation",
-                         simulations=n_sims, reindex=False,
-                         rng=np.random.default_rng(seed).standard_normal)
+                         simulations=n_sims, reindex=False)
     sim_returns_pct = fc.simulations.values[0]  # shape (n_sims, horizon_days) - the one origin
     cum_log_return = sim_returns_pct.sum(axis=1) / 100.0
     terminal_relative = np.exp(cum_log_return)
@@ -310,7 +390,8 @@ def simulate_markov_forward(best, returns_pct, origin_date, horizon_days, n_sims
 def _garch_one_step_variance(sigma2_prev, eps_prev, params, has_gamma):
     omega = params["omega"]
     alpha = params["alpha[1]"]
-    beta = params["beta[1]"]
+    beta = params.get("beta[1]", 0.0)  # ARCH(1) has no q lag, hence no beta[1] -
+    # falls back to 0 rather than KeyError, degrading correctly to the ARCH(1) recursion
     var = omega + alpha * eps_prev ** 2 + beta * sigma2_prev
     if has_gamma:
         gamma = params["gamma[1]"]
@@ -369,6 +450,36 @@ def simulate_basket_garch_forward(best, returns_pct, origin_date, horizon_days, 
     return terminal_relative, path_min_relative
 
 
+def _build_basket_shocks(best_models, tickers, L, n_sims, horizon_days, seed):
+    """Correlated shocks for the basket loop, one column per ticker.
+
+    Draws correlated standard-normal shocks (via the Cholesky factor L of the
+    real shock correlation matrix), then - for every GARCH-family name, which
+    was fit with dist="t" - remaps that name's own column through a Gaussian
+    copula onto its OWN fitted Student's-t marginal (df=nu, rescaled to unit
+    variance, matching arch's own convention). This keeps the correlation
+    structure while restoring the fat-tailed marginal the model was actually
+    fitted with, instead of leaving every name Gaussian. Markov-switching
+    names are left as plain correlated normals: MarkovRegression itself
+    assumes Gaussian errors within each regime, so Gaussian shocks there
+    already match what was fitted (and simulate_markov_forward draws its own
+    shocks independently rather than consuming this array)."""
+    rng = np.random.default_rng(seed)
+    indep_normal = rng.standard_normal((n_sims, horizon_days, len(tickers)))
+    corr_normal = indep_normal @ L.T if L is not None else indep_normal
+
+    shocks = corr_normal.copy()
+    for i, ticker in enumerate(tickers):
+        best = best_models[ticker]
+        if best["kind"] != "garch":
+            continue
+        nu = float(best["fitted"].params["nu"])
+        u = np.clip(norm.cdf(corr_normal[:, :, i]), 1e-12, 1 - 1e-12)
+        std_dev = np.sqrt(nu / (nu - 2))
+        shocks[:, :, i] = t_dist.ppf(u, df=nu) / std_dev
+    return shocks
+
+
 def estimate_shock_correlation(best_models, returns_pct_df, fit_end):
     """Correlation of each name's OWN standardized shocks (eps_t / sigma_t
     for GARCH-family; (return - regime mean)/regime vol, weighted by
@@ -408,33 +519,56 @@ def rolling_breach_probabilities(price_df, S0, best_models, returns_pct_df, fit_
     basket_mode = len(tickers) > 1
     n_sims = _safe_n_sims(n_sims, basket_mode)
     dates = price_df.index
+    S0_series = pd.Series(S0, index=tickers)
+
+    # BRC only: barrier knock-in is a one-time, irreversible event - once the
+    # REAL (not simulated) worst-of path has ever closed below BARRIER as of
+    # some rolling date, every later date treats the put as already active
+    # regardless of what the simulated forward path does from there.
+    barrier_touched_so_far = None
+    if PRODUCT_TYPE == "BRC":
+        worst_of_relative_hist = (price_df / S0_series).min(axis=1)
+        barrier_touched_so_far = worst_of_relative_hist.cummin() < BARRIER
 
     terminal_probs, touch_probs = [], []
     L = np.linalg.cholesky(np.asarray(corr_matrix)) if (basket_mode and corr_matrix is not None) else None
 
     for date in dates:
-        horizon = (maturity_date - date).days
-        if horizon <= 0:
-            relative_today = (price_df.loc[date] / S0).values
-            worst_today = float(np.min(relative_today))
-            terminal_probs.append(1.0 if worst_today < STRIKE else 0.0)
-            touch_probs.append(1.0 if worst_today < STRIKE else 0.0)
+        # STRIKE is fixed relative to S0 (entry), but every simulation below
+        # produces returns relative to TODAY's spot at `date`. relative_today
+        # re-bases the simulated outcome back onto S0, so a name that has
+        # already moved is judged against its REMAINING distance to STRIKE,
+        # not against a fresh full STRIKE move measured from today.
+        relative_today = price_df.loc[date] / S0_series
+        already_knocked_in = bool(barrier_touched_so_far.loc[date]) if PRODUCT_TYPE == "BRC" else False
+
+        horizon_calendar = (maturity_date - date).days
+        if horizon_calendar <= 0:
+            worst_today = float(relative_today.min())
+            if PRODUCT_TYPE == "BRC":
+                touch_probs.append(1.0 if already_knocked_in else 0.0)
+                terminal_probs.append(1.0 if (already_knocked_in and worst_today < STRIKE) else 0.0)
+            else:
+                terminal_probs.append(1.0 if worst_today < STRIKE else 0.0)
+                touch_probs.append(1.0 if worst_today < STRIKE else 0.0)
             continue
 
+        horizon = _calendar_to_trading_days(horizon_calendar)
+
         if not basket_mode:
-            best = best_models[tickers[0]]
+            ticker = tickers[0]
+            best = best_models[ticker]
             if best["kind"] == "garch":
-                terminal_rel, path_min_rel = simulate_garch_forward(best, returns_pct_df[tickers[0]], date, horizon, n_sims)
+                terminal_rel, path_min_rel = simulate_garch_forward(best, returns_pct_df[ticker], date, horizon, n_sims)
             else:
-                terminal_rel, path_min_rel = simulate_markov_forward(best, returns_pct_df[tickers[0]], date, horizon, n_sims)
-            terminal_probs.append(float(np.mean(terminal_rel < STRIKE)))
-            touch_probs.append(float(np.mean(path_min_rel < STRIKE)))
+                terminal_rel, path_min_rel = simulate_markov_forward(best, returns_pct_df[ticker], date, horizon, n_sims)
+            worst_terminal = terminal_rel * relative_today[ticker]
+            worst_path_min = path_min_rel * relative_today[ticker]
         else:
             worst_terminal = np.ones(n_sims)
             worst_path_min = np.ones(n_sims)
-            rng = np.random.default_rng(RNG_SEED + hash(str(date)) % 10_000)
-            indep_shocks = rng.standard_normal((n_sims, horizon, len(tickers)))
-            corr_shocks = indep_shocks @ L.T if L is not None else indep_shocks
+            corr_shocks = _build_basket_shocks(best_models, tickers, L, n_sims, horizon,
+                                                seed=RNG_SEED + hash(str(date)) % 10_000)
 
             for i, ticker in enumerate(tickers):
                 best = best_models[ticker]
@@ -445,46 +579,26 @@ def rolling_breach_probabilities(price_df, S0, best_models, returns_pct_df, fit_
                     terminal_rel, path_min_rel = simulate_markov_forward(
                         best, returns_pct_df[ticker], date, horizon, n_sims,
                         seed=RNG_SEED + hash(str(date) + ticker) % 10_000)
-                worst_terminal = np.minimum(worst_terminal, terminal_rel)
-                worst_path_min = np.minimum(worst_path_min, path_min_rel)
+                terminal_from_entry = terminal_rel * relative_today[ticker]
+                path_min_from_entry = path_min_rel * relative_today[ticker]
+                worst_terminal = np.minimum(worst_terminal, terminal_from_entry)
+                worst_path_min = np.minimum(worst_path_min, path_min_from_entry)
 
-            terminal_probs.append(float(np.mean(worst_terminal < STRIKE)))
-            touch_probs.append(float(np.mean(worst_path_min < STRIKE)))
+        # PRODUCT_TYPE semantics (see the config block up top): BRC's "breach"
+        # is a joint, path-dependent condition (barrier ever touched AND
+        # terminal < STRIKE); FCN/RC/GENERIC just compare each independently
+        # against the one STRIKE level.
+        if PRODUCT_TYPE == "BRC":
+            touch = np.ones(n_sims, dtype=bool) if already_knocked_in else (worst_path_min < BARRIER)
+            breach = touch & (worst_terminal < STRIKE)
+        else:
+            touch = worst_path_min < STRIKE
+            breach = worst_terminal < STRIKE
+
+        terminal_probs.append(float(np.mean(breach)))
+        touch_probs.append(float(np.mean(touch)))
 
     return pd.Series(terminal_probs, index=dates), pd.Series(touch_probs, index=dates)
-
-
-def risk_neutral_comparison(S0, sigma_realized, r, q, T, strike=STRIKE):
-    """Risk-neutral (drift=r-q) GBM breach probability, closed-form - a
-    theoretical contrast number (uses realized vol, not a real market-
-    quoted implied vol - this file has no options data), not a real-world
-    forecast and not a real market fair-value check."""
-    d2 = (np.log(S0 / (strike * S0)) + (r - q - 0.5 * sigma_realized ** 2) * T) / (sigma_realized * np.sqrt(T))
-    return norm.cdf(-d2)  # P(S_T < K) under GBM
-
-
-def risk_neutral_worst_of_comparison(sigmas, corr_matrix, r, T, strike=STRIKE, n_sims=50000, seed=RNG_SEED):
-    """Risk-neutral WORST-OF breach probability - the basket generalization
-    of risk_neutral_comparison above, using the SAME real correlation
-    matrix the real-world estimate uses, so the two numbers are an actual
-    apples-to-apples comparison (not one basket figure next to N single-
-    name ones). No closed form exists for an N>2 worst-of under GBM (same
-    reasoning as Multi-RC/Multi-FCN), so this is a correlated Monte Carlo -
-    cheap and exact enough here since there's no GARCH state to propagate,
-    just a single terminal draw per path."""
-    n = len(sigmas)
-    L = np.linalg.cholesky(np.asarray(corr_matrix, dtype=float))
-    rng = np.random.default_rng(seed)
-    z = rng.standard_normal((n_sims, n)) @ L.T
-    sigmas = np.asarray(sigmas)
-    terminal_relative = np.exp((r - 0.5 * sigmas ** 2) * T + sigmas * np.sqrt(T) * z)
-    worst_of = terminal_relative.min(axis=1)
-    return float(np.mean(worst_of < strike))
-
-
-def realized_annualized_vol(path):
-    log_returns = np.log(path / path.shift(1)).dropna()
-    return log_returns.std() * np.sqrt(252)
 
 
 # ---------------------------------------------------------------------------
@@ -518,13 +632,37 @@ def calibration_table(predicted, actual, n_buckets=5):
     return table
 
 
+def naive_historical_baseline(price_series, as_of_date, horizon_trading_days, strike):
+    """Walk-forward-safe naive baseline: the empirical breach frequency among
+    all horizon_trading_days-ahead returns observable using ONLY price
+    history up to and including as_of_date. This is a forecast that could
+    actually have been made AT that checkpoint - unlike a constant equal to
+    the mean of the validation set's own outcomes, which requires already
+    knowing what happened across the whole held-out period.
+
+    Deliberately terminal-only even under PRODUCT_TYPE='BRC' - a naive
+    baseline that also modeled the barrier's path-dependency would need to
+    scan every historical window for an interim breach, not just compare
+    endpoints; this simpler proxy is a reasonable "how often would the
+    terminal condition alone have been breached" floor, not a full BRC
+    baseline."""
+    history = price_series.loc[:as_of_date]
+    fwd_relative = history.pct_change(horizon_trading_days).dropna() + 1.0
+    if fwd_relative.empty:
+        return float("nan")
+    return float((fwd_relative < strike).mean())
+
+
 def walk_forward_validate(ticker, full_returns_pct, full_price_series, validation_start, validation_end,
                            tenor_years, strike, refit_every=REFIT_FREQUENCY_DAYS, eval_every=EVAL_FREQUENCY_DAYS,
                            n_sims=N_SIMULATIONS):
     """Single-asset only. Walks forward in trading days, evaluating every
     eval_every days and refitting every refit_every days."""
     n_sims = _safe_n_sims(n_sims, basket_mode=False)
-    horizon_days = round(tenor_years * 365.25)
+    horizon_calendar_days = round(tenor_years * CALENDAR_DAYS_PER_YEAR)
+    horizon_trading_days = _calendar_to_trading_days(horizon_calendar_days)  # simulation step
+    # count - the model advances one FITTED TRADING-day return per step, so this
+    # must not be the calendar-day count used just below to locate target_date.
     trading_dates = full_price_series.index
     checkpoints = trading_dates[(trading_dates >= validation_start) & (trading_dates <= validation_end)][::eval_every]
 
@@ -544,27 +682,42 @@ def walk_forward_validate(ticker, full_returns_pct, full_price_series, validatio
             gc.collect()  # discarded candidate models (arch/statsmodels result objects) each hold
             # real internal state; explicit collection keeps memory bounded across many refits.
 
-        target_pos = trading_dates.searchsorted(date + pd.Timedelta(days=horizon_days))
+        target_pos = trading_dates.searchsorted(date + pd.Timedelta(days=horizon_calendar_days))
         if target_pos >= len(trading_dates):
             continue
         target_date = trading_dates[target_pos]
 
         if current_model["kind"] == "garch":
-            terminal_rel, _ = simulate_garch_forward(current_model, full_returns_pct, date, horizon_days, n_sims)
+            terminal_rel, path_min_rel = simulate_garch_forward(current_model, full_returns_pct, date, horizon_trading_days, n_sims)
         else:
-            terminal_rel, _ = simulate_markov_forward(current_model, full_returns_pct, date, horizon_days, n_sims)
-        predicted_prob = float(np.mean(terminal_rel < strike))
+            terminal_rel, path_min_rel = simulate_markov_forward(current_model, full_returns_pct, date, horizon_trading_days, n_sims)
+
+        # Each checkpoint is treated as a fresh note starting at `date` (same
+        # convention as actual_relative below) - so for BRC there's no prior
+        # "already knocked in" state to carry in from an earlier checkpoint,
+        # unlike the live rolling estimate's single continuous note.
+        if PRODUCT_TYPE == "BRC":
+            predicted_prob = float(np.mean((path_min_rel < BARRIER) & (terminal_rel < strike)))
+        else:
+            predicted_prob = float(np.mean(terminal_rel < strike))
+        naive_predicted = naive_historical_baseline(full_price_series, date, horizon_trading_days, strike)
 
         actual_relative = float(full_price_series.loc[target_date] / full_price_series.loc[date])
-        actual_breach = 1.0 if actual_relative < strike else 0.0
+        if PRODUCT_TYPE == "BRC":
+            path_between_relative = full_price_series.loc[date:target_date] / full_price_series.loc[date]
+            actual_barrier_touched = bool((path_between_relative < BARRIER).any())
+            actual_breach = 1.0 if (actual_barrier_touched and actual_relative < strike) else 0.0
+        else:
+            actual_breach = 1.0 if actual_relative < strike else 0.0
 
         records.append({"date": date, "target_date": target_date, "predicted": predicted_prob,
+                         "naive_predicted": naive_predicted,
                          "actual": actual_breach, "model": current_model["label"]})
 
     return pd.DataFrame(records)
 
 
-def plot_validation(results_df, ticker_label, ticker, strike, brier, brier_naive, brier_rn):
+def plot_validation(results_df, ticker_label, ticker, strike, brier, brier_naive):
     calib = calibration_table(results_df["predicted"], results_df["actual"], n_buckets=5)
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
@@ -582,19 +735,20 @@ def plot_validation(results_df, ticker_label, ticker, strike, brier, brier_naive
     ax.grid(True, color="lightgrey", linewidth=0.4)
 
     ax = axes[1]
-    bars = ax.bar(["This model", "Naive\n(historical rate)", "Risk-neutral\n(GBM)"],
-                   [brier, brier_naive, brier_rn], color=["darkred", "grey", "steelblue"])
+    bars = ax.bar(["This model", "Naive\n(historical rate)"],
+                   [brier, brier_naive], color=["darkred", "grey"])
     ax.axhline(0.25, color="lightgrey", linewidth=0.8, linestyle="dotted")
-    ax.text(2.4, 0.25, " \"always guess 50%\"\n baseline", fontsize=7, color="grey", va="center")
+    ax.text(1.4, 0.25, " \"always guess 50%\"\n baseline", fontsize=7, color="grey", va="center")
     ax.set_ylabel("Brier Score (lower = better)")
     ax.set_title("Predictive accuracy vs. naive baselines")
     ax.grid(True, axis="y", color="lightgrey", linewidth=0.4)
 
-    fig.suptitle(f"{ticker_label} - Walk-Forward Validation (strike={strike:.0%}, "
-                 f"{len(results_df)} out-of-sample predictions)")
+    barrier_desc = f", barrier={BARRIER:.0%}" if PRODUCT_TYPE == "BRC" else ""
+    fig.suptitle(f"{ticker_label} - Walk-Forward Validation [{PRODUCT_LABELS[PRODUCT_TYPE]}] "
+                 f"(strike={strike:.0%}{barrier_desc}, {len(results_df)} out-of-sample predictions)")
     plt.tight_layout()
     safe_ticker = ticker.replace("^", "").replace("/", "-")
-    out_path = os.path.join(SCRIPT_DIR, f"FCN Probability Estimator - Validation ({safe_ticker}).png")
+    out_path = os.path.join(SCRIPT_DIR, f"{SCRIPT_BASENAME} - Validation ({safe_ticker}).png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Validation chart saved to {out_path}")
     plt.close()
@@ -617,15 +771,29 @@ def plot_rolling_probability(price_df, S0_list, tickers, underlying_names, termi
     ax1.axhline(strike_pct, color="dodgerblue", linewidth=0.8, linestyle="dotted")
     ax1.text(0.01, strike_pct, f"Strike: {strike_pct:.1f}%", transform=ax1.get_yaxis_transform(),
               color="dodgerblue", fontsize=9, va="bottom", ha="left")
+
+    if PRODUCT_TYPE == "BRC":
+        barrier_pct = (BARRIER - 1) * 100
+        ax1.axhline(barrier_pct, color="darkgreen", linewidth=0.8, linestyle="dotted")
+        ax1.text(0.01, barrier_pct, f"Barrier: {barrier_pct:.1f}%", transform=ax1.get_yaxis_transform(),
+                  color="darkgreen", fontsize=9, va="bottom", ha="left")
+
     ax1.set_ylabel("Return from Entry (%)")
     ax1.set_xlabel("Date")
     ax1.grid(True, color="lightgrey", linewidth=0.4)
 
+    if PRODUCT_TYPE == "BRC":
+        terminal_label = "P(barrier touched AND finishes below strike) - rolling"
+        touch_label = "P(barrier EVER touched, i.e. knocked in) - rolling"
+    else:
+        terminal_label = "P(breach AT MATURITY) - rolling"
+        touch_label = "P(EVER touches strike) - rolling"
+
     ax2 = ax1.twinx()
     l1, = ax2.plot(terminal_probs.index, terminal_probs.values * 100, color="darkred", linewidth=1.8,
-                    label="P(breach AT MATURITY) - rolling")
+                    label=terminal_label)
     l2, = ax2.plot(touch_probs.index, touch_probs.values * 100, color="firebrick", linewidth=1.3,
-                    linestyle="dashed", label="P(EVER touches strike) - rolling")
+                    linestyle="dashed", label=touch_label)
     ax2.set_ylabel("Estimated Breach Probability (%)", color="darkred", rotation=270, labelpad=15)
     ax2.tick_params(axis="y", labelcolor="darkred")
     ax2.set_ylim(-2, 102)
@@ -634,8 +802,9 @@ def plot_rolling_probability(price_df, S0_list, tickers, underlying_names, termi
     ax1.legend(lines1 + [l1, l2], labels1 + [l1.get_label(), l2.get_label()], loc="upper left", fontsize=9)
 
     basket_label = " / ".join(underlying_names)
+    strike_barrier_desc = f"Strike={STRIKE:.0%}" + (f", Barrier={BARRIER:.0%}" if PRODUCT_TYPE == "BRC" else "")
     ax1.set_title(f"{basket_label} — Real-World Rolling Breach Probability ({best_models_label})\n"
-                  f"vs Actual Historical Price Path (Strike={STRIKE:.0%})")
+                  f"vs Actual Historical Price Path [{PRODUCT_LABELS[PRODUCT_TYPE]}] ({strike_barrier_desc})")
     plt.tight_layout()
     plt.savefig(OUTPUT_PNG, dpi=150, bbox_inches="tight")
     print(f"\nChart saved to {OUTPUT_PNG}")
@@ -643,6 +812,8 @@ def plot_rolling_probability(price_df, S0_list, tickers, underlying_names, termi
 
 
 if __name__ == "__main__":
+    _cleanup_stale_validation_pngs()
+
     underlying_names = [fetch_underlying_name(t) for t in TICKERS]
     basket_mode = len(TICKERS) > 1
     print(f"{'Basket' if basket_mode else 'Underlying'}: "
@@ -688,8 +859,9 @@ if __name__ == "__main__":
         print(f"runs through {last_available_date.date()} only; there's no 'actual outcome' to compare")
         print(f"against since it hasn't happened.")
 
-    print(f"\n{'#' * 70}\nWALK-FORWARD VALIDATION (held out {validation_start.date()} to "
-          f"{validation_end.date()},\nnever overlapping the live {ENTRY_DATE} forecast below)\n{'#' * 70}")
+    print(f"\n{'#' * 70}\nWALK-FORWARD VALIDATION [{PRODUCT_LABELS[PRODUCT_TYPE]}] (held out "
+          f"{validation_start.date()} to {validation_end.date()},\nnever overlapping the live "
+          f"{ENTRY_DATE} forecast below)\n{'#' * 70}")
     validation_results = {}
     for ticker, name in zip(TICKERS, underlying_names):
         print(f"\n--- {name} ({ticker}) ---")
@@ -697,26 +869,24 @@ if __name__ == "__main__":
                                             validation_start, validation_end, TENOR, STRIKE)
         validation_results[ticker] = results_df
 
-        naive_rate = float((full_price_df[ticker].loc[validation_start:validation_end].pct_change(
-            round(TENOR * 365.25)).dropna() < (STRIKE - 1)).mean()) if len(results_df) else float("nan")
-        sigma_hist = float(realized_annualized_vol(full_price_df[ticker].loc[:validation_start]))
-        rn_prob = risk_neutral_comparison(1.0, sigma_hist, RISK_FREE_RATE, 0.0, TENOR)
-
         b = brier_score(results_df["predicted"], results_df["actual"])
-        b_naive = brier_score(np.full(len(results_df), results_df["actual"].mean()), results_df["actual"])
-        b_rn = brier_score(np.full(len(results_df), rn_prob), results_df["actual"])
+        # Naive baseline: naive_predicted is a PER-CHECKPOINT historical breach
+        # frequency computed from only the price history available as of that
+        # checkpoint (see naive_historical_baseline) - a forecast actually
+        # available at each date, not the mean of the validation set's own
+        # (future, at checkpoint time) outcomes.
+        b_naive = brier_score(results_df["naive_predicted"], results_df["actual"])
 
         print(f"\n  {len(results_df)} out-of-sample (predicted, actual) pairs, "
               f"{results_df['actual'].mean():.1%} actually breached")
         print(f"  Brier score - this model:              {b:.4f}")
         print(f"  Brier score - naive (historical rate):  {b_naive:.4f}")
-        print(f"  Brier score - risk-neutral GBM:          {b_rn:.4f}")
         print(f"  (lower is better; 0.25 = the 'always guess 50%' baseline under class balance)")
         print(f"\n  Calibration table (predicted probability bucket vs. what actually happened):")
         print(calibration_table(results_df["predicted"], results_df["actual"]).to_string(
             index=False, float_format=lambda x: f"{x:.3f}"))
 
-        plot_validation(results_df, f"{name} ({ticker})", ticker, STRIKE, b, b_naive, b_rn)
+        plot_validation(results_df, f"{name} ({ticker})", ticker, STRIKE, b, b_naive)
 
     print(f"\n{'#' * 70}\nLIVE MODEL (fit on all data through {ENTRY_DATE} - the last link in the same")
     print(f"walk-forward chain validated above, applied to the actual note)\n{'#' * 70}")
@@ -743,40 +913,37 @@ if __name__ == "__main__":
     terminal_probs, touch_probs = rolling_breach_probabilities(
         path_price_df, S0_list, best_models, full_returns_df, fit_end, maturity_ts, corr_matrix)
 
-    print(f"\n{'=' * 70}\nRESULTS\n{'=' * 70}")
-    print(f"Entry Date: {ENTRY_DATE}   Maturity Date: {maturity_ts.date()}   Strike: {STRIKE:.0%}")
-    print(f"\nDay-1 estimated P(breach at maturity):  {terminal_probs.iloc[0]:.2%}")
-    print(f"Day-1 estimated P(ever touches strike):  {touch_probs.iloc[0]:.2%}")
+    if PRODUCT_TYPE == "BRC":
+        terminal_desc, touch_desc = "P(barrier touched AND finishes below strike)", "P(barrier EVER touched, i.e. knocked in)"
+    else:
+        terminal_desc, touch_desc = "P(breach at maturity)", "P(ever touches strike)"
+
+    print(f"\n{'=' * 70}\nRESULTS [{PRODUCT_LABELS[PRODUCT_TYPE]}]\n{'=' * 70}")
+    print(f"Entry Date: {ENTRY_DATE}   Maturity Date: {maturity_ts.date()}   Strike: {STRIKE:.0%}"
+          + (f"   Barrier: {BARRIER:.0%}" if PRODUCT_TYPE == "BRC" else ""))
+    print(f"\nDay-1 estimated {terminal_desc}:  {terminal_probs.iloc[0]:.2%}")
+    print(f"Day-1 estimated {touch_desc}:  {touch_probs.iloc[0]:.2%}")
     print(f"\nMost recent rolling estimate ({path_price_df.index[-1].date()}): {terminal_probs.iloc[-1]:.2%}")
 
     if note_matured:
         actual_relative = path_price_df / pd.Series(S0_list, index=path_price_df.columns)
         actual_worst_of_T = float(actual_relative.iloc[-1].min())
-        actually_breached = actual_worst_of_T < STRIKE
-        print(f"What ACTUALLY happened in this historical path: "
-              f"worst-of relative performance at maturity = {actual_worst_of_T:.2%} "
-              f"({'BREACHED' if actually_breached else 'did not breach'} the {STRIKE:.0%} strike)")
+        if PRODUCT_TYPE == "BRC":
+            actual_barrier_touched = bool((actual_relative.min(axis=1) < BARRIER).any())
+            actually_breached = actual_barrier_touched and actual_worst_of_T < STRIKE
+            print(f"What ACTUALLY happened in this historical path: "
+                  f"barrier {'was' if actual_barrier_touched else 'was NOT'} touched; "
+                  f"worst-of relative performance at maturity = {actual_worst_of_T:.2%} "
+                  f"({'BREACHED' if actually_breached else 'did not breach'} - {STRIKE:.0%} strike, "
+                  f"{BARRIER:.0%} barrier)")
+        else:
+            actually_breached = actual_worst_of_T < STRIKE
+            print(f"What ACTUALLY happened in this historical path: "
+                  f"worst-of relative performance at maturity = {actual_worst_of_T:.2%} "
+                  f"({'BREACHED' if actually_breached else 'did not breach'} the {STRIKE:.0%} strike)")
     else:
         print(f"Note matures {maturity_ts.date()} - still {(maturity_ts - last_available_date).days} days out, "
               f"actual outcome not yet known.")
-
-    print(f"\n--- Risk-neutral comparison (the point about Monte Carlo's expected value) ---")
-    per_name_sigmas = [float(realized_annualized_vol(full_price_df[t].loc[:fit_end])) for t in TICKERS]
-    for ticker, name, sigma_realized in zip(TICKERS, underlying_names, per_name_sigmas):
-        rn_prob = risk_neutral_comparison(1.0, sigma_realized, RISK_FREE_RATE, 0.0, TENOR)
-        print(f"  {name} alone: risk-neutral (GBM) P(breach) = {rn_prob:.2%}")
-
-    if basket_mode:
-        rn_worst_of = risk_neutral_worst_of_comparison(per_name_sigmas, corr_matrix, RISK_FREE_RATE, TENOR)
-        print(f"\n  WORST-OF BASKET, apples-to-apples with the real-world estimate above (same real")
-        print(f"  correlation matrix, correlated Monte Carlo - no closed form exists for N>2 worst-of):")
-        print(f"    Risk-neutral P(breach) = {rn_worst_of:.2%}   vs.   real-world day-1 estimate = {terminal_probs.iloc[0]:.2%}")
-    else:
-        print(f"\n  vs. this file's real-world day-1 estimate = {terminal_probs.iloc[0]:.2%}")
-
-    print(f"\n  These are answering DIFFERENT questions (no-arbitrage-consistent vs. actual-world-likely) -")
-    print(f"  see the module docstring for why they're not expected to match, and shouldn't be used")
-    print(f"  interchangeably.")
 
     if len(path_price_df) < 2:
         print(f"\nSkipping the rolling-probability chart - only {len(path_price_df)} real trading day(s) "

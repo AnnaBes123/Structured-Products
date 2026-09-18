@@ -37,9 +37,53 @@ GS_CDS_SPREAD = 0.002675     # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) -
 
 ENTRY_DATE = "2025-01-02"
 TENOR = 1
-RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
-
 TICKER = "^GSPC"
+
+# --- Existing FCNs registry: lets you pick a real note you hold instead of
+# hand-editing STRIKE/TICKER/ENTRY_DATE/TENOR above every time. Add a row per
+# note to existing_fcns.csv in this folder (see its header for the format).
+EXISTING_FCNS_CSV = os.path.join(SCRIPT_DIR, "existing_fcns.csv")
+FCN_ID = None                # set to an id from existing_fcns.csv to load its terms;
+                              # leave None to use the hand-set terms just above as-is
+LIST_EXISTING_FCNS = False   # set True to print the registry and exit - no network calls
+
+
+def load_existing_fcns():
+    columns = ["id", "ticker", "strike", "entry_date", "tenor", "gs_cds_spread"]
+    if not os.path.exists(EXISTING_FCNS_CSV):
+        return pd.DataFrame(columns=columns)
+    return pd.read_csv(EXISTING_FCNS_CSV, dtype={"id": str, "ticker": str, "entry_date": str})
+
+
+def apply_fcn_from_registry(fcn_id):
+    """Overrides STRIKE/TICKER/ENTRY_DATE/TENOR (and GS_CDS_SPREAD, if the
+    row sets one) with a row from existing_fcns.csv, keyed by id."""
+    registry = load_existing_fcns()
+    match = registry[registry["id"] == fcn_id]
+    if match.empty:
+        available = ", ".join(registry["id"]) if len(registry) else "(none registered yet)"
+        raise RuntimeError(f"No FCN with id '{fcn_id}' in {EXISTING_FCNS_CSV}. Available ids: {available}")
+    return match.iloc[0].to_dict()
+
+
+if LIST_EXISTING_FCNS:
+    _registry = load_existing_fcns()
+    print(f"Existing FCNs in {EXISTING_FCNS_CSV}:")
+    print(_registry.to_string(index=False) if len(_registry) else "  (none registered yet - add rows to existing_fcns.csv)")
+    sys.exit(0)
+
+if FCN_ID is not None:
+    _row = apply_fcn_from_registry(FCN_ID)
+    TICKER = _row["ticker"]
+    STRIKE = float(_row["strike"])
+    ENTRY_DATE = _row["entry_date"]
+    TENOR = float(_row["tenor"])
+    if pd.notna(_row.get("gs_cds_spread")):
+        GS_CDS_SPREAD = float(_row["gs_cds_spread"])
+    print(f"Loaded FCN '{FCN_ID}' from registry: {TICKER}, strike={STRIKE:.0%}, "
+          f"entry={ENTRY_DATE}, tenor={TENOR}y")
+
+RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
 SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
                              # is literally "^GSPC"; never used as a stand-in for a
                              # single-name stock's own price

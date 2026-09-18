@@ -24,11 +24,13 @@ This is the only transformation applied to raw price data before any model touch
 
 ## 2. The candidate model grid (single name)
 
-Nine GARCH-family candidates = 3 mean specifications × 3 volatility specifications, every one
-fit with Student's t-distributed innovations. Two more Markov-switching candidates are added when
-`INCLUDE_MARKOV_SWITCHING = True` (off by default - see README for why). All fitting is done by
-the `arch` / `statsmodels` packages via maximum likelihood; nothing below is hand-derived except
-where explicitly marked "hand-rolled."
+18 GARCH-family candidates = 3 mean specifications × 6 volatility specifications, every one fit
+with Student's t-distributed innovations. Two more Markov-switching candidates are added when
+`INCLUDE_MARKOV_SWITCHING = True` (off by default - see README for why). In basket mode, the
+volatility grid is restricted to the 3 specs whose recursion the hand-rolled basket simulator
+implements (ARCH, GARCH, GJR-GARCH - see §4 and §5.3), so basket mode fits 9, not 18, GARCH-family
+candidates. All fitting is done by the `arch` / `statsmodels` packages via maximum likelihood;
+nothing below is hand-derived except where explicitly marked "hand-rolled."
 
 ### 2.1 Mean specifications
 
@@ -40,9 +42,15 @@ where explicitly marked "hand-rolled."
 
 ### 2.2 Volatility specifications
 
-All three build a conditional variance `σ²_t`, i.e. `r_t = μ_t + ε_t`, `ε_t = σ_t·z_t`, and
+All six build a conditional variance `σ²_t`, i.e. `r_t = μ_t + ε_t`, `ε_t = σ_t·z_t`, and
 `z_t` is the standardized innovation (Student's t below). Let `ε_{t-1}` be the previous day's
 residual (`r_{t-1} - μ_{t-1}`).
+
+**ARCH(1)** (the `β·σ²_{t-1}` term of GARCH dropped entirely - variance depends only on the most
+recent shock, not on its own recent history)
+```
+σ²_t = ω + α·ε²_{t-1}
+```
 
 **GARCH(1,1)**
 ```
@@ -62,6 +70,27 @@ hand-rolls its recursion, see §5)
 ```
 ln(σ²_t) = ω + β·ln(σ²_{t-1}) + α·(|z_{t-1}| - E|z_{t-1}|) + γ·z_{t-1},   z_{t-1} = ε_{t-1}/σ_{t-1}
 ```
+
+**APARCH(1,1,1)** (Ding, Granger & Engle 1993 - "Asymmetric Power ARCH": generalizes GARCH and
+GJR-GARCH by working in `|ε|^δ` space with an ESTIMATED power `δ`, rather than fixing `δ = 2` as
+plain squared-return GARCH implicitly does)
+```
+σ_t^δ = ω + α·(|ε_{t-1}| − γ·ε_{t-1})^δ + β·σ_{t-1}^δ,   δ estimated by MLE (not fixed)
+```
+Setting `δ = 2, γ = 0` recovers GARCH(1,1) exactly; `δ = 2` alone recovers GJR-GARCH. `arch` fits
+`δ` itself here (not fixed by this script), so APARCH nests both as special cases the search can
+converge to if the data doesn't support a different `δ`.
+
+**FIGARCH(1,1)** (Baillie, Bollerslev & Mikkelsen 1996 - "Fractionally Integrated GARCH": allows
+long-memory volatility persistence via a fractional-differencing parameter `d ∈ (0,1)`, instead of
+GARCH's implicit integer-order, exponentially-decaying persistence)
+```
+σ²_t = ω + [1 − β·L − (1 − φ·L)·(1 − L)^d]·ε²_t + β·σ²_{t-1}
+```
+(`L` is the lag operator; `(1-L)^d` is the fractional-differencing operator, expanded as an
+infinite series and truncated in practice - `arch` truncates at 1,000 lags by default. `d = 0`
+recovers GARCH(1,1)-like short memory; `d = 1` recovers full integration (IGARCH); `d` strictly
+between the two gives genuine long memory, decaying slower than any finite-order GARCH.)
 
 ### 2.3 Innovation distribution
 
@@ -136,18 +165,23 @@ so that each simulated day, every name's shock is drawn from an independent stan
 vector rotated by `L`, giving draws with exactly the target correlation structure `Σ` (to Monte
 Carlo sampling error).
 
-**A real simplification worth being explicit about**: the shocks used to drive the *basket* joint
-simulation (§5.3) are **Gaussian**, not Student's t - even though every underlying GARCH-family
-model was itself fit with Student's t innovations. Implementing a correlated multivariate Student's
-t draw (which needs its own shared degrees-of-freedom structure across names, not just a
-correlation matrix) was judged not worth the added implementation risk for a basket-mode
-simulator that's already a hand-rolled recursion (see README). The practical effect: single-asset
-simulations (§5.1) keep the fitted fat tails exactly; basket simulations understate how fat the
-*joint* tails really are, because the marginal fat-tailedness of each name individually is still
-present in its own GARCH recursion, but a multivariate Gaussian copula pulls in the joint
-extremes relative to a true multivariate-t copula. The risk-neutral worst-of comparison (§7) also
-uses Gaussian shocks, which is correct there (a GBM assumption *is* Gaussian by construction) -
-it's only an approximation in the real-world basket simulator.
+**Restoring each name's own fat tails via a Gaussian copula**: the correlated draws above are
+standard normal, but every GARCH-family name was fit with Student's t innovations (§2.3), each
+with its own fitted `ν`. Before driving the recursion in §5.3, each GARCH-family name's column of
+correlated normals is remapped through a Gaussian copula onto its own fitted Student's t marginal:
+```
+u^i    = Φ(correlated_shock^i)                          (Φ = standard normal CDF)
+shock^i = t_ppf(u^i; ν_i) / sqrt(ν_i / (ν_i - 2))        (rescaled to unit variance, matching §2.3)
+```
+This preserves each name's own marginal fat-tailedness exactly while keeping the target
+correlation structure `Σ` (to Monte Carlo sampling error) - a genuine, if approximate,
+implementation of correlated non-Gaussian shocks: it's a copula construction, not a true
+multivariate Student's t (which would need its own shared degrees-of-freedom structure across
+names), so the *joint* tail dependence is somewhat thinner than a true multivariate-t copula would
+give, even though each *marginal* is exactly the fitted t. Markov-switching names are left as
+plain correlated normals in this array (unused by `simulate_markov_forward`, which draws its own
+independent Gaussian shocks per §2.4/§5.2 - regime-switching was itself fit with Gaussian
+within-regime errors, so no remapping is needed there).
 
 ---
 
@@ -156,7 +190,23 @@ it's only an approximation in the real-world basket simulator.
 All simulation is **from a fixed origin date**, using only the model's already-fitted parameters
 (never re-estimated mid-simulation) plus every real return realized up to and including that
 origin date, to set the correct starting conditional variance / regime state / residual. The
-`origin_date` is then simulated forward `horizon_days` trading days to maturity.
+`origin_date` is then simulated forward `horizon_days` **trading** days to maturity - `horizon_days`
+itself is obtained by converting the calendar-day gap to `maturity_date` (or `TENOR` years, in the
+walk-forward validator) into an equivalent trading-day count, `round(calendar_days · 252/365.25)`,
+since one simulated step is one fitted trading-day return, not one calendar day.
+
+**Rebasing onto the entry level.** `STRIKE` is fixed relative to the underlying's own entry level `S0`,
+but the quantities below (`terminal_relative`, `path_min_relative`) are relative to `origin_date`'s
+own spot, not `S0`. Before comparing to `STRIKE`, the rolling estimator rescales:
+```
+relative_today  = S_origin / S0
+terminal_from_entry = terminal_relative · relative_today
+path_min_from_entry = path_min_relative · relative_today
+P(breach at maturity)  = mean_over_paths( terminal_from_entry < STRIKE )
+P(ever touches strike) = mean_over_paths( path_min_from_entry < STRIKE )
+```
+so that a name which has already moved since entry is judged against its *remaining* distance to
+`STRIKE` from `S0`, not against a fresh full `STRIKE`-sized move measured from `origin_date`.
 
 ### 5.1 Single-asset, GARCH-family (`simulate_garch_forward`)
 
@@ -212,9 +262,16 @@ r̂_t  = μ_t + σ_t · shock_t^i
 ε_t  = r̂_t - μ_t
 level_t = r̂_t
 ```
-(EGARCH names are excluded from basket mode entirely - its log-variance recursion, §2.2, was
-judged not worth hand-rolling here, so a basket containing an EGARCH-selected name falls back to
-GARCH/GJR only within the candidate grid; see README.)
+(`β = 0` when the winning spec is ARCH(1) - the same formula degrades correctly since ARCH has no
+`β·σ²_{t-1}` term at all, §2.2.)
+
+`EGARCH`, `APARCH`, and `FIGARCH` are excluded from the basket candidate grid entirely
+(`BASKET_INCOMPATIBLE_VOL_SPECS`) - none of their recursions (§2.2: log-variance, `|ε|^δ`-power,
+and fractionally-differenced respectively) fit the `ω + α·ε² [+ γ·ε²·1(ε<0)] + β·σ²_prev` form
+implemented above, and hand-rolling three more one-step recursions was judged not worth the added
+implementation risk (see README). A basket where the single-asset search would have picked one of
+these three instead falls back to whichever of ARCH/GARCH/GJR-GARCH scores best within that
+restricted grid.
 
 Per name, `terminal_relative` / `path_min_relative` as in §5.1. The basket's **worst-of** figure
 is then simply the elementwise minimum across names, per simulated path:
@@ -227,55 +284,7 @@ P(ever touches strike) = mean_over_paths( worst_of_path_min < STRIKE )
 
 ---
 
-## 6. Realized (historical) annualized volatility
-
-Used only as the volatility input to the risk-neutral comparison (§7), NOT anywhere in the
-real-world model itself (which uses each name's own fitted, time-varying GARCH conditional
-volatility instead):
-```
-σ_realized = std( ln(P_t / P_{t-1}) ) · √252
-```
-(Note this is computed from raw log returns, not the ×100-scaled series used for GARCH fitting -
-`realized_annualized_vol` operates directly on prices.)
-
----
-
-## 7. Risk-neutral comparison (a theoretical contrast, not a market-calibrated number)
-
-See README for what this number does and doesn't mean. Mechanically:
-
-### 7.1 Single name, closed-form (`risk_neutral_comparison`)
-
-Plain Black-Scholes / GBM under the risk-neutral measure (drift forced to `r`, using realized
-volatility `σ_realized` from §6 as the sole volatility input - there is no real implied
-volatility available here):
-```
-d2 = [ln(S0 / K) + (r - q - ½σ²)·T] / (σ·√T)
-P(breach) = P(S_T < K) = Φ(-d2)        (Φ = standard normal CDF)
-```
-With `S0 = 1` and `K = STRIKE` in this file's usage (everything is already expressed relative to
-each name's own entry level), `q = 0` (no dividend yield input available), `T = TENOR` in years.
-
-### 7.2 Basket worst-of, Monte Carlo (`risk_neutral_worst_of_comparison`)
-
-No closed form exists for an N > 2 worst-of option under GBM (same reasoning as Multi-RC /
-Multi-FCN's own risk-neutral pricing), so this is a plain correlated-GBM Monte Carlo, reusing the
-SAME real correlation matrix `Σ` from §4 so the comparison against the real-world basket estimate
-is apples-to-apples:
-```
-Σ = L·Lᵀ                                           (same Cholesky decomposition as §4)
-z = independent_standard_normal_matrix @ Lᵀ         (n_sims × n_names, one draw per name per path)
-S_T^i / S_0^i = exp( (r - ½σ_i²)·T + σ_i·√T · z^i )
-worst_of = min_i( S_T^i / S_0^i )
-P(breach) = mean_over_paths( worst_of < STRIKE )
-```
-This is a single terminal draw per path (no daily stepping needed - there's no path-dependent
-GARCH state to propagate under plain GBM), so it's cheap to run at a larger `n_sims` (default
-50,000) than the daily-stepping real-world basket simulator.
-
----
-
-## 8. Walk-forward validation: scoring real predictive skill
+## 6. Walk-forward validation: scoring real predictive skill
 
 At each of several past checkpoint dates (spaced `EVAL_FREQUENCY_DAYS` apart, using whichever
 model was most recently refit as of `REFIT_FREQUENCY_DAYS`-spaced refit dates - see README for the
@@ -283,17 +292,24 @@ model was most recently refit as of `REFIT_FREQUENCY_DAYS`-spaced refit dates - 
 probability `p̂`, which is paired with the **already-known real outcome** `y ∈ {0, 1}`
 (`1` = the underlying actually breached the strike by that checkpoint's own target date).
 
-### 8.1 Brier score
+### 6.1 Brier score
 ```
 Brier = mean( (p̂ - y)² )
 ```
 0 is a perfect forecaster; 0.25 is what "always guess 50%" scores under class balance. Computed
-for this model, for a naive baseline (`p̂ = ` the unconditional historical breach frequency over
-the same test period, held fixed), and for the risk-neutral baseline (`p̂ = ` §7.1's number, held
-fixed) - three numbers on the same real outcomes, so lower is a genuine, comparable measure of
-predictive skill, not just goodness-of-fit.
+for this model and for a **naive baseline** (`naive_historical_baseline`):
+```
+p̂_naive(as_of_date) = mean_over_historical_windows( (P_{s+H} / P_s) < STRIKE )
+```
+where the historical windows range over every `H`-trading-day (`H` = the same converted horizon
+as §5) pair fully contained in the price history up to and including `as_of_date` - i.e. only
+information that checkpoint could actually have seen, recomputed fresh at every checkpoint. This
+is deliberately NOT the mean of the validation set's own outcomes (which would require already
+knowing what happened across the whole held-out period before the first checkpoint is even
+scored) - two numbers on the same real outcomes, so a lower Brier score for this model over the
+naive one is a genuine, comparable measure of predictive skill, not just goodness-of-fit.
 
-### 8.2 Calibration table
+### 6.2 Calibration table
 
 Predictions are bucketed into quantiles of `p̂` (`pd.qcut`, 5 buckets by default), and each
 bucket reports:

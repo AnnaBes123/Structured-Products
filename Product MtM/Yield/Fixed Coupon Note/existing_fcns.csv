@@ -1,0 +1,2 @@
+id,ticker,strike,entry_date,tenor,gs_cds_spread
+example,^GSPC,0.90,2025-01-02,1,
