@@ -111,6 +111,30 @@ draws independent even in basket mode, using its own Gaussian shocks (matching h
 the joint simulator can actually be checked against the single-asset engines, not trusted on
 faith.
 
+## What's held fixed vs. what's simulated
+
+Only the **fitted model parameters** are frozen across a simulation batch - the variance-recursion
+coefficients, mean coefficients, and Student's t degrees of freedom (§2 in MATHEMATICS.md), plus,
+in basket mode, the shock correlation matrix (§4) - all held at whatever the most recent fit (or
+walk-forward refit) produced, never re-estimated mid-simulation.
+
+Everything else evolves stochastically, path by path:
+
+- **Spot** - the cumulative output of simulated daily returns, obviously.
+- **Volatility** - genuinely simulated, *not* held flat. Each simulated day updates the conditional
+  variance from that path's own previous simulated shock via the fitted GARCH recursion (see
+  MATHEMATICS.md §5) - a path that draws a large early shock runs hot in variance for the rest of
+  that path, a calm path stays calm. This is the opposite of `Product MtM/`'s single-name products,
+  which hold one flat vol number for a note's entire life (see that folder's README) - flattening
+  volatility here would defeat the entire point of fitting a variance-clustering model in the first
+  place.
+- **Regime** (Markov-switching candidates only) - which regime a path is in also evolves
+  stochastically each simulated day, via the fitted transition matrix.
+
+**Not modeled at all**: there is no interest rate or discounting anywhere in this file. Real-world
+(physical-measure) probability estimation has nothing to discount - see this README's opening
+section for why that's a deliberate difference from `Product MtM/`, not an oversight.
+
 ## `PRODUCT_TYPE`: what "breach" means
 
 `PRODUCT_TYPE` picks which condition the model actually estimates:
@@ -266,6 +290,35 @@ on the `arch` package (GARCH-family models) and `statsmodels` (Markov-switching)
   current CCC-GARCH + Gaussian-copula-onto-fitted-t approach here is the pragmatic middle ground
   in pure Python: real, estimated correlation and each name's own genuine fat tails, without an
   R dependency.
+
+## Naive GBM benchmark: `P(Breach) Estimator (Naive GBM).py`
+
+This folder also has a deliberately **naive** companion script, `P(Breach) Estimator (Naive GBM).py`
+- plain geometric Brownian motion with ONE constant `(mu, sigma)` per name, estimated once from a
+`GBM_LOOKBACK_YEARS` (2y) trailing window, driving a single Monte Carlo batch straight from
+`ENTRY_DATE` to maturity. It exists as a floor: the GARCH-based estimator above should be beating
+this, not the other way round, and now there's a companion script that actually computes what that
+floor is, instead of it being an abstract claim.
+
+Same `PRODUCT_TYPE`/`STRIKE`/`BARRIER`/`TICKERS`/`ENTRY_DATE`/`TENOR` convention as the main file,
+so the two are directly comparable on the same note. Differences:
+
+- **Not sequential/rolling** - one simulation batch from `ENTRY_DATE`, not a walk over every
+  historical date. No walk-forward validation, no refitting, no "self-learning" - just the single
+  live estimate.
+- **No volatility clustering, no fat tails** - constant `sigma` for the whole horizon (the thing
+  the "What's held fixed vs. what's simulated" section above says GARCH deliberately does NOT do),
+  Gaussian shocks instead of a fitted Student's t.
+- **Closed-form cross-checks, single-asset only** - because GBM has an exact analytical solution,
+  its own simulation can be checked against two continuous-monitoring closed forms (a lognormal
+  terminal CDF, and a reflection-principle first-passage probability) - see MATHEMATICS.md section
+  7. There's no equivalent closed form for a correlated worst-of basket, so basket mode skips this
+  check.
+- **Basket correlation needs no copula** - because GBM shocks are Gaussian to begin with, the same
+  Cholesky-correlation trick used in the main file's basket mode works directly, with no
+  Gaussian-copula remapping step required.
+
+Run it the same way: `python3 "P(Breach) Estimator (Naive GBM).py"`.
 
 ## R companion: `P(Breach) Estimator.R`
 
