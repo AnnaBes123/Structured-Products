@@ -33,6 +33,9 @@ Thumbs.db
 .idea/
 *.swp
 
+# Claude Code local settings (machine-specific permissions, not shared config)
+.claude/
+
 # Note: chart/data outputs are NOT ignored here - Product MtM/*.png is
 # committed reference output, while Estimators/*.png and per-product
 # audit CSVs already have their own folder-level .gitignore. See
