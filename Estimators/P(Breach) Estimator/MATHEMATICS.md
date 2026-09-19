@@ -195,18 +195,52 @@ itself is obtained by converting the calendar-day gap to `maturity_date` (or `TE
 walk-forward validator) into an equivalent trading-day count, `round(calendar_days · 252/365.25)`,
 since one simulated step is one fitted trading-day return, not one calendar day.
 
-**Rebasing onto the entry level.** `STRIKE` is fixed relative to the underlying's own entry level `S0`,
-but the quantities below (`terminal_relative`, `path_min_relative`) are relative to `origin_date`'s
-own spot, not `S0`. Before comparing to `STRIKE`, the rolling estimator rescales:
+**What's fixed vs. what's simulated, precisely.** "Already-fitted parameters" above means `ω`,
+`α`, `β`, `γ` (§2.2), the mean coefficients (§2.1), `ν` (§2.3), and, in basket mode, the shock
+correlation matrix `Σ` (§4) - these are frozen for the whole simulation batch, only changing at the
+next refit. `σ²_t` itself is **not** one of those fixed quantities - it's a *state variable* that
+the recursions in §5.1-§5.3 update fresh, path by path, day by day, from each path's own randomly
+drawn shocks; a path that draws a large early shock runs hot in variance for the rest of that path,
+a calm path stays calm. That is the opposite of the flat, single-number volatility input
+`Product MtM/`'s single-name products use over a note's life (see that folder's README) - holding
+`σ²_t` flat here would defeat the entire point of fitting a variance-clustering model. There is
+also no interest rate or discounting anywhere in this file's formulas - real-world (physical
+measure) probability estimation has nothing to discount (see README's opening section for why
+that's deliberate, not an omission).
+
+**Rebasing onto the entry level.** `STRIKE` (and, under `PRODUCT_TYPE="BRC"`, `BARRIER`) are fixed
+relative to the underlying's own entry level `S0`, but the quantities below (`terminal_relative`,
+`path_min_relative`) are relative to `origin_date`'s own spot, not `S0`. Before comparing to either
+level, the rolling estimator rescales:
 ```
 relative_today  = S_origin / S0
 terminal_from_entry = terminal_relative · relative_today
 path_min_from_entry = path_min_relative · relative_today
-P(breach at maturity)  = mean_over_paths( terminal_from_entry < STRIKE )
-P(ever touches strike) = mean_over_paths( path_min_from_entry < STRIKE )
 ```
 so that a name which has already moved since entry is judged against its *remaining* distance to
-`STRIKE` from `S0`, not against a fresh full `STRIKE`-sized move measured from `origin_date`.
+`STRIKE`/`BARRIER` from `S0`, not against a fresh full `STRIKE`-sized move measured from
+`origin_date`.
+
+**Turning those into a breach probability** depends on `PRODUCT_TYPE` (see README for the product
+framing behind each case):
+```
+FCN / RC / GENERIC:
+  P(breach at maturity)  = mean_over_paths( terminal_from_entry < STRIKE )
+  P(ever touches strike) = mean_over_paths( path_min_from_entry < STRIKE )
+
+BRC  (requires 0 < BARRIER < STRIKE):
+  already_in = whether the REAL (not simulated) worst-of path has ever closed below
+               BARRIER by origin_date - a one-time, irreversible knock-in event
+  touch      = True for every path if already_in, else ( path_min_from_entry < BARRIER )
+  P(barrier ever touched, i.e. knocked in)      = mean_over_paths( touch )
+  P(barrier touched AND finishes below strike)  = mean_over_paths( touch  AND  terminal_from_entry < STRIKE )
+```
+`already_in` is computed once per rolling date straight from the real historical worst-of series
+(`(price_df / S0).min(axis=1).cummin() < BARRIER`), never from a simulation - once the real path has
+knocked in, every simulated continuation from that origin date onward is already active regardless
+of what its own simulated `path_min` looks like. `FCN`/`RC`/`GENERIC` carry no such state: "ever
+touches strike" there is a forward-looking-only diagnostic recomputed fresh at each rolling date,
+not a cumulative one - there is nothing to "knock in" without a barrier below the strike.
 
 ### 5.1 Single-asset, GARCH-family (`simulate_garch_forward`)
 
@@ -289,8 +323,18 @@ P(ever touches strike) = mean_over_paths( worst_of_path_min < STRIKE )
 At each of several past checkpoint dates (spaced `EVAL_FREQUENCY_DAYS` apart, using whichever
 model was most recently refit as of `REFIT_FREQUENCY_DAYS`-spaced refit dates - see README for the
 "self-learning" design), the model forecasts `TENOR` years forward (§5.1/5.2) to get a predicted
-probability `p̂`, which is paired with the **already-known real outcome** `y ∈ {0, 1}`
-(`1` = the underlying actually breached the strike by that checkpoint's own target date).
+probability `p̂`, which is paired with the **already-known real outcome** `y ∈ {0, 1}`.
+
+For `FCN`/`RC`/`GENERIC`, `y = 1` iff the underlying actually breached the strike by that
+checkpoint's own target date. For `BRC`, `p̂` and `y` are both the joint condition from §5:
+`p̂ = mean_over_paths( (path_min_rel < BARRIER) AND (terminal_rel < STRIKE) )`, and `y = 1` iff the
+REAL price path between the checkpoint and its target date ever closed below `BARRIER` *and* the
+target-date return is below `STRIKE`. Unlike the live rolling estimate, each walk-forward
+checkpoint is scored as a **fresh note starting at that checkpoint** - there is no `already_in`
+state carried in from an earlier checkpoint the way §5's live estimate carries it across rolling
+dates within one continuous note's life. The naive baseline (§6.1) stays terminal-only even under
+`BRC` - see `naive_historical_baseline`'s docstring for why a genuinely barrier-aware naive
+baseline was out of scope.
 
 ### 6.1 Brier score
 ```
@@ -319,3 +363,74 @@ empirical_frequency = mean(y)          within the bucket
 ```
 A model with real predictive skill should show `mean_predicted ≈ empirical_frequency` in every
 bucket - the diagonal of a calibration plot.
+
+---
+
+## 7. Naive GBM benchmark (`P(Breach) Estimator (Naive GBM).py`)
+
+The companion script's entire model, end to end - see README's "Naive GBM benchmark" section for
+why it exists (a floor the GARCH-based estimator above should be beating).
+
+### 7.1 Parameter estimation
+
+One constant `(μ, σ)` per name, the sample mean/std of daily log returns over a trailing
+`GBM_LOOKBACK_YEARS` (2y) window ending at `ENTRY_DATE`:
+```
+μ = mean(r_t),   σ = std(r_t),   t over the lookback window
+```
+Because `r_t` here is the **log** return (§1, but unscaled - no `×100`, since there's no MLE
+optimizer to stabilize), `μ` already *is* the drift of `ln(S)` directly - no separate
+`-σ²/2` convexity correction is needed anywhere below, unlike a formulation that starts from
+simple (arithmetic) returns.
+
+### 7.2 Forward simulation
+
+A single batch of `n_sims` paths, `H` = `horizon_days` (trading days from `ENTRY_DATE` to
+maturity, same calendar-to-trading-day conversion as §5), each day's log-return drawn i.i.d.
+Gaussian:
+```
+r̂_t = μ + σ·z_t,   z_t ~ N(0,1),   t = 1..H
+S_t/S_0 = exp( Σ_{s=1}^{t} r̂_s )
+```
+No re-basing is needed (unlike §5's `relative_today` step) because the simulation origin IS
+`ENTRY_DATE` - there is no earlier "already-moved" state to rescale from.
+
+**Basket mode**: `z_t` is drawn as a length-`n_tickers` correlated standard normal vector per day
+(Cholesky factor of the real Pearson correlation matrix of the lookback log returns, `Σ = L·Lᵀ`,
+`z_t = independent_normal_t @ Lᵀ` - identical mechanism to §4's Cholesky step). No Gaussian-copula
+remapping is needed here (unlike §4), because GBM's shocks are Gaussian by construction - the
+copula step in §4 exists solely to restore each GARCH name's *non-Gaussian* fitted Student's t
+marginal, which doesn't apply to a model that's Gaussian to begin with.
+
+### 7.3 Breach/touch probabilities
+
+Identical `PRODUCT_TYPE` logic to §5 (worst-of across names first, in basket mode, then compared
+against `STRIKE`/`BARRIER`) - see §5's "Turning those into a breach probability" block, substituting
+this section's simulated paths.
+
+### 7.4 Closed-form benchmarks (single-asset only)
+
+GBM has an exact analytical solution, so - unlike the GARCH-family models in §2, which have no
+closed form - the simulation itself can be checked against continuous-monitoring formulas:
+
+**Terminal (lognormal CDF)** - a sanity check on the RNG/simulation plumbing, since the simulator's
+own terminal draw IS this lognormal by construction:
+```
+P(S_H/S_0 < level) = Φ( (ln(level) - μH) / (σ√H) )
+```
+
+**First passage / "ever touches"** (reflection principle, for an arithmetic Brownian motion
+`X_t = μt + σW_t` starting at `X_0 = 0`, hitting `b = ln(level) ≤ 0` by time `H`):
+```
+P( min_{0≤t≤H} X_t ≤ b ) = Φ( (b - μH)/(σ√H) )  +  exp(2μb/σ²) · Φ( (b + μH)/(σ√H) )
+```
+Setting `μ = 0` collapses this to the textbook driftless reflection formula `2·Φ(b/(σ√H))`, which
+is a useful check on the formula itself. This is a **continuous**-monitoring result; this file's
+own simulation is **daily**-discretized (one shock per trading day, exactly like the main
+estimator), so a small, expected gap between the simulated frequency and this closed form is a
+discretization effect, not a bug - the same relationship as Barrier Reverse Convertible's CRR
+lattice vs. its `AnalyticBarrierEngine` continuous benchmark.
+
+**No basket closed form**: both formulas above are single-name results. A correlated worst-of
+basket's joint first-passage probability has no comparably simple closed form, so basket mode runs
+without a cross-check - an acknowledged scope cut, not a silently-skipped one (see README).

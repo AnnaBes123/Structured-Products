@@ -1,0 +1,39 @@
+# Byte-compiled / cached Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+ENV/
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+
+# Note: chart/data outputs are NOT ignored here - Product MtM/*.png is
+# committed reference output, while Estimators/*.png and per-product
+# audit CSVs already have their own folder-level .gitignore. See
+# CLAUDE.md "Chart (.png) versioning differs by folder".
