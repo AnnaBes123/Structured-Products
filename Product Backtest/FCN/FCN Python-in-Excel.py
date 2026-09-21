@@ -6,17 +6,29 @@ result spills as a normal range instead of showing as a single Python-object car
 
 Setup this expects on the sheet (adjust the two xl(...) range references below to match):
   1. A FactSet-pulled daily price history somewhere on the sheet, laid out as a plain table with a
-     header row: "Date" in the first column, one column per ticker after it (e.g. "Prices!A1:B6300").
+     header row: "Date" in the first column, one column per ticker after it (e.g. "Prices!A1:B100000").
      Use FactSet's Formula Builder (ribbon > FactSet > Formula Builder > search "price history" /
      "time series") to build that pull - the exact function name (e.g. FG_PRICE) and argument order
      depend on your FactSet entitlements, so generate it there rather than trust a hardcoded example.
-  2. A one-row parameter table, headers in row 1 and values in row 2, one column per term - e.g. on
-     a "Params" sheet:
-       Strike | Autocall Trigger | Tenor Months | Autocall Frequency Months | Autocall Lockout Months | Launch Start | Launch End | Max Gap Days
-        0.90  |       1.00       |      12      |             3             |            0            |  2001-09-18  |  (blank)   |     10
-     Column names below must match these headers exactly. Autocall Frequency Months = 0 disables
-     autocall (Excel has no blank-means-None the way Python does - 0 is the sentinel). Launch End
-     left blank -> resolves to the last date in the price table.
+     The range below is deliberately oversized (100,000 rows - centuries of daily data) rather than
+     sized to match exactly: `.dropna()` already strips the unused blank tail, so a range that's too
+     BIG is harmless, only one that's too SMALL silently truncates data - pulling more history later
+     (a bigger date range, in FactSet, not in this range string) never needs this number bumped
+     again. It only needs widening (more columns, e.g. to column C/D/...) if you add more tickers
+     for a worst-of basket.
+  2. A two-column parameter list on a "Params" sheet, one term per row, label in column A and value
+     in column B (A1:B8):
+       Strike                        0.90
+       Autocall Trigger              1.00
+       Tenor Months                  12
+       Autocall Frequency Months     3
+       Autocall Lockout Months       0
+       Launch Start                  2001-09-18
+       Launch End                    (blank)
+       Max Gap Days                  10
+     The labels in column A below must match these exactly (spelling/spacing). Autocall Frequency
+     Months = 0 disables autocall (Excel has no blank-means-None the way Python does - 0 is the
+     sentinel). Launch End left blank -> resolves to the last date in the price table.
 
 `xl()` is a Python-in-Excel builtin (not usable/importable outside Excel) - it reads a sheet range
 and, with headers=True, returns it as a pandas DataFrame. pandas is preloaded as `pd` in this
@@ -25,23 +37,29 @@ environment; no other import is available (no internet access, no yfinance - see
 every term below is read via xl(...), the cell recalculates automatically whenever a param or the
 price table changes - no button, no reopening the formula bar.
 
+Output: a two-column Metric/Value table (one row per number, not one wide row) with every percentage
+pre-formatted as a "71.1%"-style string - so it reads correctly with no manual cell formatting step,
+at the cost of those cells no longer being usable in further Excel arithmetic (they're text, by
+design - see DEVLOG.md).
+
 Ported from, and verified to match exactly (see DEVLOG.md), FCN.py's classify_launch - this is a
 compact reimplementation, not a shared code path, same caveat as FCN XLSX.py.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 
-params = xl("Params!A1:H2", headers=True)                # <-- adjust range to your Params table
-STRIKE = float(params["Strike"].iloc[0])
-AUTOCALL_TRIGGER = float(params["Autocall Trigger"].iloc[0])
-TENOR_MONTHS = int(params["Tenor Months"].iloc[0])
-AUTOCALL_FREQUENCY_MONTHS = int(params["Autocall Frequency Months"].iloc[0])   # 0 = disabled
-AUTOCALL_LOCKOUT_MONTHS = int(params["Autocall Lockout Months"].iloc[0])
-MAX_OBSERVATION_GAP_DAYS = int(params["Max Gap Days"].iloc[0])
-launch_start_raw = params["Launch Start"].iloc[0]
-launch_end_raw = params["Launch End"].iloc[0]
+params_raw = xl("Params!A1:B8")                          # <-- adjust range to your Params table
+params = dict(zip(params_raw.iloc[:, 0], params_raw.iloc[:, 1]))   # label (col A) -> value (col B)
+STRIKE = float(params["Strike"])
+AUTOCALL_TRIGGER = float(params["Autocall Trigger"])
+TENOR_MONTHS = int(params["Tenor Months"])
+AUTOCALL_FREQUENCY_MONTHS = int(params["Autocall Frequency Months"])   # 0 = disabled
+AUTOCALL_LOCKOUT_MONTHS = int(params["Autocall Lockout Months"])
+MAX_OBSERVATION_GAP_DAYS = int(params["Max Gap Days"])
+launch_start_raw = params["Launch Start"]
+launch_end_raw = params["Launch End"]
 
-prices_df = xl("Prices!A1:B6300", headers=True)          # <-- adjust range to your table
+prices_df = xl("Prices!A1:B100000", headers=True)        # <-- oversized on purpose, see docstring
 prices_df = prices_df.dropna().set_index(prices_df.columns[0]).sort_index()
 tickers = list(prices_df.columns)
 all_dates = prices_df.index
@@ -99,16 +117,20 @@ def pct(bucket, of):
     return of.count(bucket) / len(of) if of else None
 
 
-result = pd.DataFrame([{
-    "Product": "/".join(tickers) + " FCN",
-    "Launches": len(outcomes),
-    "Autocall %": pct("AUTOCALL", outcomes),
-    "Maturity Cash %": pct("MATURITY_CASH", outcomes),
-    "Physical Delivery %": pct("PHYSICAL_DELIVERY", outcomes),
-    "Outstanding %": pct("OUTSTANDING", outcomes),
-    "Completed Launches": len(completed),
-    "Completed Autocall %": pct("AUTOCALL", completed),
-    "Completed Maturity Cash %": pct("MATURITY_CASH", completed),
-    "Completed Physical Delivery %": pct("PHYSICAL_DELIVERY", completed),
-}])
+def fmt_pct(x):
+    return f"{x:.1%}" if x is not None else "n/a"
+
+
+result = pd.DataFrame([
+    ("Product", "/".join(tickers) + " FCN"),
+    ("Launches", len(outcomes)),
+    ("Autocall %", fmt_pct(pct("AUTOCALL", outcomes))),
+    ("Maturity Cash %", fmt_pct(pct("MATURITY_CASH", outcomes))),
+    ("Physical Delivery %", fmt_pct(pct("PHYSICAL_DELIVERY", outcomes))),
+    ("Outstanding %", fmt_pct(pct("OUTSTANDING", outcomes))),
+    ("Completed Launches", len(completed)),
+    ("Completed Autocall %", fmt_pct(pct("AUTOCALL", completed))),
+    ("Completed Maturity Cash %", fmt_pct(pct("MATURITY_CASH", completed))),
+    ("Completed Physical Delivery %", fmt_pct(pct("PHYSICAL_DELIVERY", completed))),
+], columns=["Metric", "Value"])
 result

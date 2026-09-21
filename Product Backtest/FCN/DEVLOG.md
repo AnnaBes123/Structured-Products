@@ -153,13 +153,48 @@ actually build hasn't been decided yet.
 `FCN Python-in-Excel.py` first had STRIKE/AUTOCALL_TRIGGER/etc. as constants inside the Python
 snippet itself, same as `FCN XLSX.py` - but that means anyone who wants to try a different strike
 has to open the formula bar and edit Python, which isn't "easily accessible for people" who aren't
-the one who wrote it. Changed to read every term from a one-row `Params` table (headers row 1,
-values row 2, one column per term) via `xl("Params!A1:H2", headers=True)` instead. Two side benefits
-of doing it through `xl()` rather than hardcoding: (1) the `=PY()` cell now recalculates
-automatically whenever a Params cell changes, same as any other Excel formula - no button, no
-reopening the formula bar; (2) verified locally by stubbing `xl()` to return the same shapes Excel
-would and exec'ing the snippet body against real AMD data - reproduced FCN.py's audited numbers
-exactly, so the parameter-plumbing didn't introduce a bug.
+the one who wrote it. Changed to read every term from a `Params` table via `xl(...)` instead. Two
+side benefits of doing it through `xl()` rather than hardcoding: (1) the `=PY()` cell now
+recalculates automatically whenever a Params cell changes, same as any other Excel formula - no
+button, no reopening the formula bar; (2) verified locally by stubbing `xl()` to return the same
+shapes Excel would and exec'ing the snippet body against real AMD data - reproduced FCN.py's
+audited numbers exactly, so the parameter-plumbing didn't introduce a bug.
+
+First attempt read it as a one-row table at `A1:H2` (headers row 1, values row 2) - the sheet as
+actually built didn't match (see below), which produced `ValueError: could not convert string to
+float: 'Autocall Trigger'`: headers=True treated row 1 as the header and the *next label down* as
+if it were Strike's value. Briefly switched to a vertical label/value-per-row layout instead, then
+back again once the sheet was rebuilt to the horizontal form at `B2:H3` (header row 2, values row
+3, offset from A1 to leave room for a sheet title/row label) - same `headers=True` reading, just a
+different range. Re-verified against the same stubbed-AMD test at each step; all three shapes
+(A1:H2, vertical A1:B8, B2:H3) reproduce FCN.py's audited numbers exactly once the code matches
+whatever the sheet actually is - the lesson isn't "one layout is right," it's that the `xl(...)`
+range and headers=True/off setting have to be re-verified any time the sheet layout changes.
+
+Settled back on the vertical (down-rows) layout at `A1:B8` as the final form, for both Params and
+now the output too (see below) - each metric its own row reads better than one very wide row once
+there are 8+ columns, and matches how a person naturally lists inputs one-per-line.
+
+## Oversized price range instead of an exact one (2026-09-21)
+
+`xl("Prices!A1:B6300", headers=True)` had to be hand-edited to a new row count every time the
+FactSet pull's date range changed, which is exactly the kind of "change the code manually" friction
+this whole Params-table effort was meant to remove. Fixed the actual constraint, not just moved it:
+`.dropna()` (already present) strips any blank trailing rows, so a range that's too BIG is
+harmless - only one that's too SMALL silently truncates real data. Bumped it to `A1:B100000`
+(centuries of daily data) once, and it should never need bumping again for a wider date range -
+only widening (more columns) if a worst-of basket adds more tickers.
+
+## Output as a vertical Metric/Value table, percentages pre-formatted as text (2026-09-21)
+
+The result table was one wide row (`Product | Launches | Autocall % | ...`, 10 columns) with raw
+fractions (0.711493) rather than percentages. Changed to a two-column `Metric`/`Value` table, one
+row per number - reads better spilled into a sheet than a 10-column-wide row - and pre-formats every
+percentage as a string (`f"{x:.1%}"`, e.g. "71.1%") rather than leaving it as a raw fraction for a
+manual Excel number-format step. Trade-off: those Value cells are text, not numeric, so they can't
+be used directly in further Excel arithmetic - acceptable here since this table is a terminal report,
+not an intermediate calculation input. Re-verified against the stubbed-AMD test with a padded (too-
+big) price range to confirm both changes together still reproduce the audited numbers exactly.
 
 ## Terse code / devlog split (2026-09-21)
 
