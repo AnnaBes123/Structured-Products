@@ -1,107 +1,13 @@
 """
-Rolling historical backtest of one or more Fixed Coupon Notes (FCN) - a
-worst-of, physically-settled, autocallable note. No knock-in barrier: unlike
-`Product MtM/Yield/Barrier Reverse Convertible`, a plain FCN's downside
-feature is a EUROPEAN put on the worst-of basket, checked only at maturity -
-same "no barrier, only where it ends up matters" convention already used by
-`Product MtM/Yield/Fixed Coupon Note` (see that README's "Terminal payoff"
-section). This variant differs from that one in being worst-of and
-physically settled (delivery of the underlying) rather than single-name and
-cash-settled, which is the flavor of FCN this backtest's PHYSICAL_DELIVERY
-outcome is about.
+Rolling historical backtest of one or more Fixed Coupon Notes (FCN) - a worst-of, physically-
+settled, autocallable note with a EUROPEAN (maturity-only) downside test, no knock-in barrier.
+Not a `Product MtM/` script - no option replication, no QuantLib, no mark-to-market. Launches the
+note on every trading day of an explicit launch period and classifies each launch mechanically
+against one real historical price path (or worst-of basket of paths).
 
-This is NOT a `Product MtM/` script - there is no option replication, no
-QuantLib, no mark-to-market. The question here is purely mechanical: given
-one real historical price path (or a worst-of basket of paths), and a note
-that is hypothetically LAUNCHED INDEPENDENTLY ON EVERY TRADING DAY of an
-explicitly specified launch period, what fraction of those launches end up
-in each of the FCN's possible outcomes? Launches overlap - a new launch
-never waits for an earlier one to terminate - and each underlying is
-re-normalized to its OWN spot on that specific launch date; only the
-percentage terms (STRIKE, AUTOCALL_TRIGGER, ...) are held fixed across
-launches.
-
-EACH PRODUCT IS OBSERVED SEPARATELY - see the PRODUCTS dict below. There is
-deliberately no single shared STRIKE/AUTOCALL_TRIGGER applied to whatever
-ticker happens to be plugged in - see the "Observed underlying behavior"
-diagnostic block each product's report starts with, built from that
-specific ticker's/basket's own historical return distribution (log returns,
-no autocall or strike applied yet), so STRIKE/AUTOCALL_TRIGGER can be picked
-by hand with actual reference to what that underlying has actually done.
-
-FCN mechanics assumed (identical across products - only the levels differ):
-  - On each autocall observation date, if the worst-performing underlying
-    (relative to its own level at launch) is AT OR ABOVE AUTOCALL_TRIGGER,
-    the note redeems immediately at 100% of par (+ coupons, not modeled -
-    coupons don't affect these capital outcomes, see README). The very
-    first candidate observation is always strictly after launch - see
-    build_observation_offsets - so a note can never "autocall on day one".
-  - If the note is never autocalled and survives to maturity: the worst-of
-    level AT MATURITY ONLY (no interim monitoring) is compared to STRIKE.
-      - At or above STRIKE -> MATURITY_CASH, 100% capital back.
-      - Below STRIKE -> PHYSICAL_DELIVERY: delivery of the worst-performing
-        underlying, at a conversion ratio of 1/STRIKE. The investor recovers
-        (worst-of level at maturity) / STRIKE of par, i.e. a capital loss.
-  - A launch whose nominal maturity date is still in the future relative to
-    the data cutoff, and which has not already autocalled, is OUTSTANDING:
-    its final outcome isn't known yet and it is never forced into one of
-    the three resolved buckets.
-
-WHICH LAUNCHES ARE TESTED, AND HOW "TODAY" IS HANDLED (see README for the
-full explanation of why this replaced an earlier, implicit version):
-  - LAUNCH_START / LAUNCH_END explicitly bound the launch period. Every
-    trading day in that inclusive range that the fetched data actually
-    covers is launched and classified - unlike an approach that silently
-    drops any launch whose full tenor isn't observable yet, which would
-    quietly discard the most recent ~TENOR_MONTHS of launches without
-    saying so.
-  - DATA_AS_OF is the hard price-data cutoff: nothing dated after it is
-    ever used, and if left as None it resolves to the most recent COMPLETE
-    calendar day before now (not "today"), so this script never scores an
-    observation off a trading session that's still in progress.
-  - Every launch is classified as AUTOCALL / MATURITY_CASH /
-    PHYSICAL_DELIVERY / OUTSTANDING as of DATA_AS_OF. A separate,
-    restricted report - the "completed-tenor cohort" - covers only
-    launches whose NOMINAL maturity date is on or before DATA_AS_OF, and
-    reports the three resolved-outcome percentages for that cohort alone.
-    A launch that already autocalled early but whose nominal maturity is
-    still in the future is NOT pulled into that cohort just because its
-    outcome happens to be known already - doing so would compare a
-    cherry-picked (fast-resolving) slice of the recent launches against the
-    full population of older ones, which never had that "still open"
-    subset excluded, and would mechanically bias the comparison.
-
-BUSINESS-DAY / CALENDAR HANDLING: a scheduled observation date (launch +
-N calendar months) is rolled forward to the next trading day actually
-present in the fetched data ("following" convention - see map_observation).
-A roll of more than MAX_OBSERVATION_GAP_DAYS calendar days is treated as an
-unresolved data gap rather than an ordinary weekend/holiday roll, and is
-flagged (status "UNRESOLVED_GAP" in the audit table) instead of being
-silently evaluated against a price that may be materially later than the
-note's actual contractual observation date. This is a real distinction: a
-5-day gap over a long weekend is normal market behavior, a 40-day gap is
-very likely a vendor data hole or a trading halt, and conflating the two
-(as plain dropna()+searchsorted() does) can silently move an observation
-across a gap it shouldn't cross.
-
-CONTRACT / DATA ASSUMPTIONS THAT WOULD NEED THE ACTUAL TERM SHEET TO
-VERIFY (see README "Scope and limitations" for more):
-  - "Final valuation date" here means the date the terminal/autocall price
-    is READ, not a settlement date - a real note's cash or physical
-    delivery settles some number of business days later per its term
-    sheet, and that lag is not modeled here.
-  - Prices are yfinance's un-adjusted `Close` (`auto_adjust=False`):
-    split-adjusted (unavoidable - a split mechanically changes the traded
-    price) but NOT dividend-adjusted. That is deliberately NOT switched to
-    a dividend-adjusted / total-return series, since a term sheet's
-    reference price is normally the exchange's own closing print, not a
-    total-return index level - but this script does not attempt to model
-    whatever bespoke "Potential Adjustment Event" provisions a real term
-    sheet would specify for extraordinary corporate actions.
-
-Data source: yfinance, one fetch per product covering exactly
-[LAUNCH_START, DATA_AS_OF] - no implicit extra lookback and no data beyond
-the cutoff (see fetch_multi_asset_path / backtest_product).
+Full product mechanics, terminology, and scope/limitations: see README.md. Design history and
+rationale (why launches are handled this way, bugs that got fixed, rejected alternatives): see
+DEVLOG.md. Both are one directory up from PRODUCTS below.
 """
 
 import os
@@ -115,56 +21,54 @@ plt.rcParams["font.family"] = "Arial"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+OUTCOME_COLORS = {
+    "AUTOCALL": "dodgerblue",
+    "MATURITY_CASH": "seagreen",
+    "PHYSICAL_DELIVERY": "firebrick",
+    "OUTSTANDING": "lightgrey",
+}
+
 # ---------------------------------------------------------------------------
 # PRODUCTS - each one is a fully independent FCN, backtested and reported on
-# separately. Add/edit entries here rather than sharing one set of terms
-# across tickers - see module docstring for why. Use the printed "Observed
-# underlying behavior" diagnostics (log-return annualized vol, empirical
-# trigger hit-rates, empirical strike breach rates) to pick STRIKE/
-# AUTOCALL_TRIGGER for a NEW product before trusting its results.
+# separately (see DEVLOG.md "Why per-product terms"). Use the printed
+# "Observed underlying behavior" diagnostics to pick STRIKE/AUTOCALL_TRIGGER
+# for a new product before trusting its results.
 # ---------------------------------------------------------------------------
 
-PRODUCTS = {
-    "PFE FCN": dict(
-        TICKERS=["PFE"],          # 1 ticker = single-underlying; 2+ = worst-of basket
-        STRIKE=0.70,                # fraction of INITIAL_VALUE, checked ONLY at maturity
+PRODUCTS = [
+    dict(
+        TICKERS=["AMD"],          # 1 ticker = single-underlying; 2+ = worst-of basket
+        STRIKE=0.90,                # fraction of INITIAL_VALUE, checked ONLY at maturity
         AUTOCALL_TRIGGER=1.00,      # fraction of INITIAL_VALUE, checked at each observation
         TENOR_MONTHS=12,
         AUTOCALL_FREQUENCY_MONTHS=3,   # None disables autocall entirely
         AUTOCALL_LOCKOUT_MONTHS=0,
     ),
-    # Add more named products here, e.g.:
-    # "GME FCN": dict(TICKERS=["GME"], STRIKE=0.70, AUTOCALL_TRIGGER=1.00,
-    #                  TENOR_MONTHS=12, AUTOCALL_FREQUENCY_MONTHS=3, AUTOCALL_LOCKOUT_MONTHS=0),
-}
+    # Add more products here, e.g.:
+    # dict(TICKERS=["GME"], STRIKE=0.70, AUTOCALL_TRIGGER=1.00,
+    #      TENOR_MONTHS=12, AUTOCALL_FREQUENCY_MONTHS=3, AUTOCALL_LOCKOUT_MONTHS=0),
+]
 
-INITIAL_VALUE = 1.00   # the 100% reference each ratio is measured against - always 1.00 by
-                        # construction (every underlying is normalized to its own level at
-                        # launch); named rather than a bare 1.00 so STRIKE/AUTOCALL_TRIGGER
-                        # read as "fraction of INITIAL_VALUE", not as an option strike price.
 
-# ---------------------------------------------------------------------------
-# EXPLICIT launch-period / data-cutoff boundaries (replaces the old implicit
-# BACKTEST_YEARS-anchored-to-the-last-fully-observable-launch behavior, which
-# silently shifted the whole launch period back by ~TENOR_MONTHS and dropped
-# every recent launch instead of reporting them as OUTSTANDING). All three
-# are shared across every product in PRODUCTS, same as the old BACKTEST_YEARS/
-# END_DATE were.
-# ---------------------------------------------------------------------------
-LAUNCH_START = "2001-09-18"   # first candidate launch date (inclusive); pin to a literal
-                                # "YYYY-MM-DD" for a fixed, reproducible study
-LAUNCH_END = None              # last candidate launch date (inclusive); None -> resolves to
-                                # DATA_AS_OF (a note can't be launched past the data cutoff)
-DATA_AS_OF = None              # price-data cutoff (inclusive); None -> resolves to the most
-                                # recent COMPLETE calendar day before now, so an in-progress
-                                # trading session's close is never used (see resolve_run_dates)
+def product_label(terms):
+    """Display/filename label - derived from TICKERS, not hand-maintained, so changing TICKERS is
+    enough on its own (see DEVLOG.md "Product label derived from TICKERS")."""
+    return "/".join(terms["TICKERS"]) + " FCN"
 
-MAX_OBSERVATION_GAP_DAYS = 10   # calendar-day tolerance for rolling a scheduled observation
-                                  # date forward to an actual trading day - see map_observation
+INITIAL_VALUE = 1.00   # always 1.00 by construction (each underlying normalized to its own launch
+                        # level); named so STRIKE/AUTOCALL_TRIGGER read as "fraction of", not a price
 
-# Candidate levels shown in the per-product "Observed underlying behavior"
-# diagnostic - purely descriptive, independent of whatever STRIKE/
-# AUTOCALL_TRIGGER that product actually uses.
+# Explicit launch-period / data-cutoff boundaries, shared across every product in PRODUCTS.
+LAUNCH_START = "2001-09-18"   # first candidate launch date (inclusive)
+LAUNCH_END = None              # last candidate launch date (inclusive); None -> DATA_AS_OF
+DATA_AS_OF = None              # price-data cutoff (inclusive); None -> most recent COMPLETE
+                                # calendar day before now (see resolve_run_dates)
+
+MAX_OBSERVATION_GAP_DAYS = 10   # calendar-day tolerance before a rolled observation date is
+                                  # flagged as an unresolved data gap - see map_observation
+
+# Candidate levels for the per-product "Observed underlying behavior" diagnostic - purely
+# descriptive, independent of whatever STRIKE/AUTOCALL_TRIGGER that product actually uses.
 DIAGNOSTIC_TRIGGER_CANDIDATES = (0.90, 0.95, 1.00, 1.05, 1.10)
 DIAGNOSTIC_STRIKE_CANDIDATES = (0.50, 0.60, 0.70, 0.80, 0.90)
 
@@ -174,14 +78,8 @@ DIAGNOSTIC_STRIKE_CANDIDATES = (0.50, 0.60, 0.70, 0.80, 0.90)
 # ---------------------------------------------------------------------------
 
 def build_observation_offsets(tenor_months, frequency_months, lockout_months):
-    """Month-offsets (from launch) of autocall observation dates, STRICTLY
-    before maturity and STRICTLY after launch (the first offset is always
-    lockout_months + frequency_months, never lockout_months itself, and
-    frequency_months is always > 0 - so an offset of exactly 0 is
-    structurally impossible, which is what rules out a "month-zero"/
-    launch-day autocall by construction rather than by a runtime check).
-    The final maturity redemption is handled separately (see module
-    docstring), never double-counted as an autocall."""
+    """Month-offsets (from launch) of autocall observation dates - always > 0 and < tenor_months,
+    so month-zero/launch-day autocall is impossible by construction (see DEVLOG.md)."""
     if frequency_months is None:
         return []
     start = lockout_months + frequency_months
@@ -218,19 +116,13 @@ def validate_terms(name, terms):
                               f"before TENOR_MONTHS, got {offsets!r}")
 
 
-for _name, _terms in PRODUCTS.items():
-    validate_terms(_name, _terms)
+for _terms in PRODUCTS:
+    validate_terms(product_label(_terms), _terms)
 
 
 def resolve_run_dates():
-    """Resolves LAUNCH_START/LAUNCH_END/DATA_AS_OF into concrete
-    pd.Timestamps. DATA_AS_OF=None resolves to the most recent COMPLETE
-    calendar day before now (yesterday), not "today" - avoids evaluating
-    any ratio against an in-progress, not-yet-final trading session's
-    close (issue: the old script fetched through END_DATE + 2 days without
-    ever trimming back down to a real cutoff). LAUNCH_END=None resolves to
-    DATA_AS_OF, since a note cannot be launched on a day beyond the data
-    cutoff."""
+    """Resolves LAUNCH_START/LAUNCH_END/DATA_AS_OF into concrete pd.Timestamps.
+    DATA_AS_OF=None -> yesterday, not today (see DEVLOG.md)."""
     if DATA_AS_OF is None:
         data_as_of = pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
     else:
@@ -252,12 +144,8 @@ def resolve_run_dates():
 # ---------------------------------------------------------------------------
 
 def fetch_daily_closes(ticker, start, end, fred_series=None):
-    """Daily closes for `ticker` between start and end. yfinance first,
-    FRED fallback (pandas_datareader) if given and yfinance comes up empty.
-    Uses auto_adjust=False (raw exchange close, split-adjusted but NOT
-    dividend-adjusted) - see module docstring's "CONTRACT / DATA
-    ASSUMPTIONS" section for why this is a deliberate choice, not an
-    oversight, and what it doesn't cover."""
+    """Daily closes for `ticker`. yfinance first, FRED fallback if given and yfinance is empty.
+    auto_adjust=False: split-adjusted but NOT dividend-adjusted, deliberately (see README)."""
     series = None
 
     try:
@@ -295,15 +183,8 @@ def fetch_underlying_name(ticker):
 
 
 def fetch_multi_asset_path(tickers, start, end):
-    """Aligned daily-close matrix for all tickers. For a worst-of basket,
-    dates on which ANY ticker is missing a price (e.g. a different exchange
-    holiday calendar) are dropped from ALL tickers via an inner join, so
-    every remaining row is genuinely comparable across the whole basket.
-    That is a real, and non-trivial, modeling choice for a basket: it can
-    drop a date that one ticker actually traded on, purely because another
-    member of the basket didn't. It's flagged here (row-count before/after)
-    rather than done silently, since a large drop is a sign of materially
-    mismatched calendars rather than the occasional shared holiday."""
+    """Aligned daily-close matrix for all tickers. Inner join across tickers - a date missing on
+    ANY ticker is dropped from ALL (see DEVLOG.md "Basket dates" for why, and what it can drop)."""
     fred = "SP500" if tickers == ["^GSPC"] else None
     if len(tickers) == 1:
         series = {tickers[0]: fetch_daily_closes(tickers[0], start, end, fred_series=fred)}
@@ -323,11 +204,8 @@ def fetch_multi_asset_path(tickers, start, end):
 
 
 def validate_price_df(price_df, tickers):
-    """Validates the fetched price matrix before it's used for anything:
-    a sorted, unique date index (duplicate or out-of-order dates would
-    silently corrupt searchsorted-based observation matching), and finite,
-    strictly positive prices (a zero, negative, or NaN close would corrupt
-    every ratio computed against it)."""
+    """Sorted/unique date index and finite, strictly positive prices - anything else would
+    silently corrupt every ratio computed downstream."""
     if price_df.empty:
         raise ValueError("price_df is empty - no overlapping trading days across the requested tickers/dates")
     idx = price_df.index
@@ -344,10 +222,7 @@ def validate_price_df(price_df, tickers):
 
 
 def realized_annualized_vol_log(price_series):
-    """Annualized realized vol from LOG returns - same convention as
-    Product MtM/_common.py's realized_annualized_vol. Purely descriptive
-    context here (feeds no pricing), meant to inform a by-hand STRIKE/
-    AUTOCALL_TRIGGER choice for this specific underlying."""
+    """Annualized realized vol from log returns - same convention as Product MtM/_common.py."""
     log_returns = np.log(price_series / price_series.shift(1)).dropna()
     return float(log_returns.std() * np.sqrt(252))
 
@@ -357,26 +232,10 @@ def realized_annualized_vol_log(price_series):
 # ---------------------------------------------------------------------------
 
 def map_observation(target_calendar_date, all_dates, max_gap_days=MAX_OBSERVATION_GAP_DAYS):
-    """Maps a scheduled calendar date to the next available trading day -
-    the "following" business-day convention: if the scheduled date isn't a
-    trading day (weekend, exchange holiday, or a genuine hole in the
-    fetched data), the observation rolls forward to the next trading day
-    actually present in `all_dates`.
-
-    Returns (position, actual_date, gap_days, resolved):
-      - position/actual_date: None/None if the target is beyond the last
-        available date (not yet observable given the data on hand).
-      - gap_days: calendar days between the scheduled date and the matched
-        trading day.
-      - resolved: False when gap_days > max_gap_days. A few days' roll over
-        a weekend or a holiday cluster is normal and expected; a roll of
-        many days is much more likely a genuine data hole (missing vendor
-        data, a trading halt) than a holiday, and silently evaluating the
-        observation against that later price could misrepresent what the
-        note actually observed on its real contractual date. Unresolved
-        observations are flagged (status "UNRESOLVED_GAP") rather than
-        silently used - see classify_launch.
-    """
+    """Maps a scheduled calendar date to the next available trading day ("following" convention).
+    Returns (position, actual_date, gap_days, resolved); position/actual_date are None if the
+    target is beyond the last available date. resolved=False if gap_days > max_gap_days - a large
+    gap is treated as a data hole, not a holiday roll (see DEVLOG.md)."""
     pos = int(all_dates.searchsorted(target_calendar_date))
     if pos >= len(all_dates):
         return None, None, None, False
@@ -392,11 +251,9 @@ def map_observation(target_calendar_date, all_dates, max_gap_days=MAX_OBSERVATIO
 
 def classify_launch(prices, all_dates, i, tenor_months, obs_offsets, strike, trigger,
                      data_as_of, max_gap_days=MAX_OBSERVATION_GAP_DAYS):
-    """Classifies ONE launch (position i in `prices`/`all_dates`) into
-    AUTOCALL / MATURITY_CASH / PHYSICAL_DELIVERY / OUTSTANDING as of
-    `data_as_of`. `prices` is a (T, n_tickers) array; `all_dates` its
-    DatetimeIndex. Returns a dict with the full per-launch audit detail
-    (see build_audit_dataframe)."""
+    """Classifies ONE launch (position i) into AUTOCALL / MATURITY_CASH / PHYSICAL_DELIVERY /
+    OUTSTANDING as of data_as_of. Returns a dict with the full per-launch audit detail (see
+    build_audit_dataframe)."""
     launch_date = all_dates[i]
     s0 = prices[i]  # each ticker's own level at launch (worst-of is normalized per-ticker)
     maturity_calendar = launch_date + pd.DateOffset(months=tenor_months)
@@ -407,9 +264,8 @@ def classify_launch(prices, all_dates, i, tenor_months, obs_offsets, strike, tri
     if full_tenor_observable:
         pos, actual_date, gap, resolved = map_observation(maturity_calendar, all_dates, max_gap_days)
         if pos is None or not resolved:
-            # Nominal maturity has passed, but the actual matched trading day
-            # is either unavailable or too far from the scheduled date to
-            # trust (data gap) - don't force a resolved outcome off it.
+            # Nominal maturity has passed but the matched trading day is unavailable/too far - an
+            # unresolved gap, not a resolved outcome.
             full_tenor_observable = False
         else:
             j = pos
@@ -439,12 +295,8 @@ def classify_launch(prices, all_dates, i, tenor_months, obs_offsets, strike, tri
             obs_records.append(rec)
             continue
         if j is not None and pos >= j:
-            # Issue fix: an observation date must resolve STRICTLY before the
-            # actual maturity valuation date to count as an early-autocall
-            # check; coinciding with (or, in a badly gapped calendar, landing
-            # after) maturity's own trading day is not a valid early
-            # observation for this product - the terminal test at maturity
-            # already covers that same trading day.
+            # Must resolve strictly before maturity's own trading day to count as an early-autocall
+            # check - maturity's terminal test already covers that day (see DEVLOG.md).
             rec["status"] = "COINCIDES_WITH_OR_AFTER_MATURITY_SKIPPED"
             obs_records.append(rec)
             continue
@@ -467,11 +319,8 @@ def classify_launch(prices, all_dates, i, tenor_months, obs_offsets, strike, tri
             autocall_month = m
             autocall_date = actual_date
 
-    # Descriptive-only stats (not used by the classification above): the
-    # underlying's own max/terminal return over whatever window has actually
-    # been observed so far for this launch (through maturity if resolved,
-    # else through the last available data point) - lets the cohort table
-    # sanity-check the outcome mix against the real data (see yearly_breakdown).
+    # Descriptive-only (not used by the classification above): the underlying's own max/terminal
+    # return over the window observed so far - lets the cohort table sanity-check the outcome mix.
     window_end_pos = j if j is not None else (len(all_dates) - 1)
     window_ratio = (prices[i:window_end_pos + 1] / s0).min(axis=1)
     max_return_pct = float(window_ratio.max() - 1) * 100
@@ -516,12 +365,9 @@ def classify_launch(prices, all_dates, i, tenor_months, obs_offsets, strike, tri
 
 def completed_tenor_positions(all_dates, tenor_months, launch_start, launch_end, data_as_of,
                                max_gap_days=MAX_OBSERVATION_GAP_DAYS):
-    """(launch position, maturity position) pairs restricted to launches
-    whose NOMINAL maturity date is on or before data_as_of AND whose actual
-    maturity trading day resolves cleanly (no unresolved data gap). Used
-    only by the purely-descriptive diagnostic_stats - the real
-    classification logic lives in classify_launch, which computes this same
-    "full_tenor_observable" condition per-launch as part of run_backtest."""
+    """(launch position, maturity position) pairs restricted to launches whose NOMINAL maturity is
+    on or before data_as_of and resolves cleanly. Feeds diagnostic_stats only - real classification
+    logic lives in classify_launch."""
     candidates = np.where((all_dates >= launch_start) & (all_dates <= launch_end))[0]
     out = []
     for i in candidates:
@@ -539,12 +385,8 @@ def completed_tenor_positions(all_dates, tenor_months, launch_start, launch_end,
 # ---------------------------------------------------------------------------
 
 def run_backtest(price_df, terms, launch_start, launch_end, data_as_of):
-    """One pass over every trading-day launch in [launch_start, launch_end],
-    classifying each via classify_launch. Returns (results, coverage):
-    results is a list of per-launch dicts, coverage reports requested vs.
-    actually-available launch/data coverage (issue: the old script never
-    reported this, silently implying the full requested period was always
-    fully tested)."""
+    """One pass over every trading-day launch in [launch_start, launch_end]. Returns (results,
+    coverage) - coverage reports requested vs. actually-available launch/data coverage."""
     all_dates = price_df.index
     prices = price_df.to_numpy()
     obs_offsets = build_observation_offsets(
@@ -584,13 +426,9 @@ def run_backtest(price_df, terms, launch_start, launch_end, data_as_of):
 # ---------------------------------------------------------------------------
 
 def build_audit_dataframe(results, terms, obs_offsets):
-    """One row per launch: initial prices, absolute strike/trigger levels
-    per ticker, scheduled and actual observation dates with observed
-    ratios (one column-triplet per scheduled observation month), first
-    autocall date, final valuation date, outcome, and delivery recovery
-    fraction where applicable. This IS the audit trail - every number this
-    script reports is derived from (and can be recomputed from) this
-    table."""
+    """One row per launch - initial prices, absolute strike/trigger levels, scheduled+actual
+    observation dates/ratios, first autocall date, final valuation date, outcome, recovery
+    fraction. This IS the audit trail every reported number can be recomputed from."""
     tickers = terms["TICKERS"]
     rows = []
     for r in results:
@@ -618,13 +456,9 @@ def build_audit_dataframe(results, terms, obs_offsets):
 
 
 def cross_check_autocall_rate(audit_df, terms, obs_offsets):
-    """Independently reconstructs the AUTOCALL determination from nothing
-    but the stored per-observation ratio/status columns in `audit_df` -
-    a separate code path from classify_launch's own autocalled/break logic
-    - and asserts it matches the recorded Outcome exactly, launch by
-    launch. This is the audit's cross-check of the headline autocall rate
-    against the observation-price data itself, not just a re-display of a
-    number the same loop already produced."""
+    """Independently reconstructs AUTOCALL purely from the stored Obs*_Ratio/Obs*_Status audit
+    columns - a separate code path from classify_launch - and asserts an exact match, launch by
+    launch (see DEVLOG.md "Cross-check as a second, independent code path")."""
     trigger = terms["AUTOCALL_TRIGGER"]
 
     def reconstruct(row):
@@ -635,9 +469,8 @@ def cross_check_autocall_rate(audit_df, terms, obs_offsets):
                     return m
             elif status == "NOT_YET_OBSERVABLE":
                 break
-            # COINCIDES_WITH_OR_AFTER_MATURITY_SKIPPED, UNRESOLVED_GAP, and
-            # NOT_APPLICABLE_ALREADY_AUTOCALLED all mean "keep looking at the
-            # next scheduled observation", matching classify_launch's `continue`.
+            # COINCIDES_WITH_OR_AFTER_MATURITY_SKIPPED / UNRESOLVED_GAP / NOT_APPLICABLE_ALREADY_
+            # AUTOCALLED all mean "keep looking", matching classify_launch's `continue`.
         return None
 
     reconstructed_month = audit_df.apply(reconstruct, axis=1)
@@ -655,9 +488,8 @@ def cross_check_autocall_rate(audit_df, terms, obs_offsets):
     n = len(audit_df)
     n_reconstructed = int(reconstructed_autocall.sum())
     rate = n_reconstructed / n if n else float("nan")
-    print(f"Independent cross-check: AUTOCALL reconstructed purely from the stored Obs*_Ratio/Obs*_Status "
-          f"audit columns (a separate code path from the original classification) = {n_reconstructed}/{n} "
-          f"({rate:.1%}) - exact match against the reported Outcome column for all {n} launches.")
+    print(f"Independent cross-check: AUTOCALL reconstructed from stored audit columns = {n_reconstructed}/{n} "
+          f"({rate:.1%}) - exact match against the reported Outcome column.")
     return rate
 
 
@@ -667,13 +499,10 @@ def cross_check_autocall_rate(audit_df, terms, obs_offsets):
 
 def diagnostic_stats(price_df, tenor_months, frequency_months, lockout_months,
                       launch_start, launch_end, data_as_of):
-    """Descriptive-only summary of this product's OWN underlying(s),
-    restricted to the completed-tenor cohort (full TENOR_MONTHS window
-    actually observable as of data_as_of) so it isn't distorted by
-    partially-observed recent launches: for each candidate trigger level,
-    what fraction of launches would have cleared it at SOME observation
-    date; for each candidate strike, what fraction would have finished
-    below it at maturity IGNORING autocall entirely."""
+    """Descriptive-only summary of this product's OWN underlying(s), restricted to the completed-
+    tenor cohort: for each candidate trigger, fraction of launches that would have cleared it at
+    SOME observation; for each candidate strike, fraction that would have finished below it at
+    maturity IGNORING autocall."""
     all_dates = price_df.index
     prices = price_df.to_numpy()
     obs_offsets = build_observation_offsets(tenor_months, frequency_months, lockout_months)
@@ -723,11 +552,8 @@ def print_diagnostics(basket_desc, price_df, tickers, terms, launch_start, launc
 
 
 def yearly_breakdown(results):
-    """Groups launches by the CALENDAR YEAR they launched in. Four
-    categories per year now (AUTOCALL/MATURITY_CASH/PHYSICAL_DELIVERY/
-    OUTSTANDING) - the most recent year(s) will typically show a large
-    OUTSTANDING share, which is informative (those launches haven't had
-    time to resolve) rather than something to hide by dropping them."""
+    """Groups launches by calendar year of launch. A recent year will typically show a large
+    OUTSTANDING share - that's expected, not a bug."""
     cohorts = {}
     for r in results:
         year = r["launch_date"].year
@@ -750,19 +576,98 @@ def yearly_breakdown(results):
 
 
 # ---------------------------------------------------------------------------
+# CHARTS
+# ---------------------------------------------------------------------------
+
+def plot_outcome_mix_by_year(cohorts, terms, name, basket_desc, worst_of_note, n_total, results,
+                              data_as_of, safe_name):
+    """100%-stacked bar chart, one bar per launch year, of the outcome mix among that year's
+    launches."""
+    years = list(cohorts.keys())
+    autocall_pct = [cohorts[y]["autocall"] / cohorts[y]["n"] * 100 for y in years]
+    maturity_pct = [cohorts[y]["maturity_cash"] / cohorts[y]["n"] * 100 for y in years]
+    delivery_pct = [cohorts[y]["delivery"] / cohorts[y]["n"] * 100 for y in years]
+    outstanding_pct = [cohorts[y]["outstanding"] / cohorts[y]["n"] * 100 for y in years]
+
+    fig, ax = plt.subplots(figsize=(max(8, len(years) * 0.4), 5.5))
+    ax.bar(years, autocall_pct, color=OUTCOME_COLORS["AUTOCALL"], width=0.7, label="AUTOCALL (early, at par)")
+    bottom1 = autocall_pct
+    ax.bar(years, maturity_pct, bottom=bottom1, color=OUTCOME_COLORS["MATURITY_CASH"], width=0.7,
+           label="MATURITY_CASH (full tenor, capital back)")
+    bottom2 = [a + m for a, m in zip(autocall_pct, maturity_pct)]
+    ax.bar(years, delivery_pct, bottom=bottom2, color=OUTCOME_COLORS["PHYSICAL_DELIVERY"], width=0.7,
+           label="PHYSICAL_DELIVERY (capital loss)")
+    bottom3 = [b + d for b, d in zip(bottom2, delivery_pct)]
+    ax.bar(years, outstanding_pct, bottom=bottom3, color=OUTCOME_COLORS["OUTSTANDING"], width=0.7,
+           label="OUTSTANDING (not yet resolved)")
+    ax.set_ylabel("Share of that launch year's daily launches (%)")
+    ax.set_ylim(0, 100)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, frameon=False, fontsize=8)
+    ax.grid(True, axis="y", which="major", color="lightgrey", linewidth=0.6)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
+    ax.set_title(
+        f"FCN Rolling Backtest - {name}: {basket_desc}{worst_of_note}, by launch year\n"
+        f"Strike {terms['STRIKE']:.0%} / Autocall {terms['AUTOCALL_TRIGGER']:.0%} / Tenor {terms['TENOR_MONTHS']}m "
+        f"({n_total} launches, {results[0]['launch_date'].date()} to {results[-1]['launch_date'].date()}, "
+        f"data as-of {data_as_of.date()})",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    output_png = os.path.join(SCRIPT_DIR, f"{safe_name}.png")
+    plt.savefig(output_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_png
+
+
+def plot_growth_with_launch_outcomes(price_df, tickers, results, terms, name, basket_desc,
+                                      worst_of_note, data_as_of, safe_name):
+    """Underlying's (or worst-of basket's) growth path, normalized to 1.0 at the start of the
+    fetched history, with one dot per tested launch date colored by that launch's outcome. Visual
+    sanity-check for a headline percentage that looks implausible - see DEVLOG.md "Growth chart
+    with launch dots"."""
+    growth = (price_df[tickers] / price_df[tickers].iloc[0]).min(axis=1)
+
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    ax.plot(growth.index, growth.to_numpy(), color="black", linewidth=0.8, alpha=0.6, zorder=1)
+
+    for outcome, color in OUTCOME_COLORS.items():
+        dates = [r["launch_date"] for r in results if r["outcome"] == outcome]
+        if not dates:
+            continue
+        ax.scatter(dates, growth.loc[dates].to_numpy(), s=8, color=color, alpha=0.5,
+                   linewidths=0, label=f"{outcome} launch", zorder=2)
+
+    ax.set_ylabel("Worst-of growth vs. start of fetched history (x)" if len(tickers) > 1
+                  else "Price growth vs. start of fetched history (x)")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=2, frameon=False, fontsize=8, markerscale=2)
+    ax.grid(True, axis="y", which="major", color="lightgrey", linewidth=0.6)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    ax.set_title(
+        f"FCN Rolling Backtest - {name}: {basket_desc}{worst_of_note}\n"
+        f"Underlying growth with launch outcomes (data as-of {data_as_of.date()})",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    output_png = os.path.join(SCRIPT_DIR, f"{safe_name} - growth.png")
+    plt.savefig(output_png, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_png
+
+
+# ---------------------------------------------------------------------------
 # SYNTHETIC CORRECTNESS TESTS
 # ---------------------------------------------------------------------------
 
 def run_synthetic_tests():
-    """Self-contained correctness tests against constructed (not fetched)
-    price paths - covers each outcome bucket, equality-at-boundary
-    behavior, the no-launch-day-autocall guarantee, holiday vs. missing-
-    data handling, the strictly-before-maturity early-autocall fix, data-
-    cutoff/OUTSTANDING handling, insufficient-history coverage flagging,
-    and input validation. Run before every real backtest (see __main__) -
-    if any of these fail, the classification logic itself is broken and
-    the real numbers below aren't trustworthy, so the script aborts rather
-    than printing potentially-wrong results."""
+    """Self-contained correctness tests against constructed price paths - covers each outcome
+    bucket, boundary equalities, holiday/gap handling, cutoff/OUTSTANDING handling, and input
+    validation. Run before every real backtest (see __main__) - if any fail, the classification
+    logic is broken and the real numbers below aren't trustworthy."""
     print(f"\n{'=' * 72}\nSYNTHETIC CORRECTNESS TESTS\n{'=' * 72}")
 
     tenor_months = 12
@@ -826,9 +731,8 @@ def run_synthetic_tests():
     assert r["outcome"] == "MATURITY_CASH", r
     n_run += 1
 
-    # (f) NO launch-day autocall: ratio is trivially 1.00 (=trigger) on day 0,
-    # but day 0 is never a scheduled observation - a note that dips right
-    # after launch and never recovers must NOT be marked AUTOCALL.
+    # (f) no launch-day autocall: day-0 ratio is trivially 1.00 (=trigger) but day 0 is never
+    # scheduled, so a note that dips right after launch and never recovers must NOT be AUTOCALL.
     prices = np.full(n_days, 100.0)
     prices[1:] = 50.0
     r = run_case(prices, dates, 0, data_as_of_full)
@@ -836,9 +740,8 @@ def run_synthetic_tests():
     assert r["autocall_month"] is None, r
     n_run += 1
 
-    # (g) holiday adjustment: drop the exact scheduled month-3 trading day;
-    # the observation should roll to the next available day with a small,
-    # resolved gap, and the outcome should reflect that day's actual price.
+    # (g) holiday roll: drop the exact scheduled month-3 day; observation rolls to the next
+    # available day with a small, resolved gap.
     dates_holiday = make_dates(n_days, drop=[m3_pos])
     prices = np.full(n_days - 1, 100.0)
     prices[m3_pos:] = 110.0  # index shifts down by one after the drop
@@ -848,9 +751,8 @@ def run_synthetic_tests():
     assert obs3["status"] == "OBSERVED" and 0 < obs3["gap_days"] <= MAX_OBSERVATION_GAP_DAYS, obs3
     n_run += 1
 
-    # (h) missing data: a large hole spanning the month-3 date must be
-    # flagged UNRESOLVED and NOT silently evaluated - a transient spike
-    # placed right after the hole must not trigger a spurious autocall.
+    # (h) missing data: a large hole spanning month 3 must be flagged UNRESOLVED, not silently
+    # evaluated - a spike placed right after the hole must not trigger a spurious autocall.
     big_gap_drop = range(m3_pos - 20, m3_pos + 20)
     dates_gap = make_dates(n_days, drop=big_gap_drop)
     prices = np.full(len(dates_gap), 90.0)
@@ -863,15 +765,13 @@ def run_synthetic_tests():
     assert r["outcome"] != "AUTOCALL", r
     n_run += 1
 
-    # (i) cutoff handling: DATA_AS_OF falls before the first scheduled
-    # observation -> nothing has been observed yet, note is OUTSTANDING.
+    # (i) cutoff before the first scheduled observation -> OUTSTANDING
     r = run_case(np.full(n_days, 100.0), dates, 0, dates[0] + pd.Timedelta(days=10))
     assert r["outcome"] == "OUTSTANDING", r
     assert all(o["status"] == "NOT_YET_OBSERVABLE" for o in r["obs_records"]), r["obs_records"]
     n_run += 1
 
-    # (j) outstanding notes: some observations have resolved (none
-    # triggered), but maturity is still beyond the data cutoff.
+    # (j) some observations resolved (none triggered), but maturity still beyond the cutoff
     prices = np.full(n_days, 100.0)
     prices[1:] = 90.0
     r = run_case(prices, dates, 0, dates[0] + pd.DateOffset(months=8))
@@ -881,9 +781,8 @@ def run_synthetic_tests():
     assert observed_months == [3, 6], observed_months
     n_run += 1
 
-    # (k) an observation date that resolves to the SAME actual trading day as
-    # maturity (forced via a collapsed calendar) must be excluded from the
-    # early-autocall check, not treated as an early autocall.
+    # (k) an observation resolving to the SAME actual trading day as maturity (collapsed calendar)
+    # must be excluded from the early-autocall check, not treated as an early autocall.
     m9_calendar = dates[0] + pd.DateOffset(months=9)
     m9_pos_orig = int(dates.searchsorted(m9_calendar))
     drop_collapse = range(m9_pos_orig, j_pos)
@@ -943,7 +842,8 @@ def run_synthetic_tests():
 # MAIN PER-PRODUCT REPORT
 # ---------------------------------------------------------------------------
 
-def backtest_product(name, terms):
+def backtest_product(terms):
+    name = product_label(terms)
     tickers = terms["TICKERS"]
     underlying_names = [fetch_underlying_name(t) for t in tickers]
     basket_desc = " / ".join(f"{n} ({t})" for n, t in zip(underlying_names, tickers))
@@ -959,9 +859,8 @@ def backtest_product(name, terms):
 
     print(f"\n{'#' * 72}\n{name}\n{'#' * 72}")
     print(f"Requested launch period: {launch_start.date()} to {launch_end.date()}  |  Data as-of: {data_as_of.date()}")
-    print(f"Business-day convention: scheduled observation dates roll forward to the next available trading "
-          f"day ('following'); a roll of more than {MAX_OBSERVATION_GAP_DAYS} calendar days is treated as an "
-          f"unresolved data gap (not a holiday) and is flagged, not silently used.")
+    print(f"Business-day convention: observations roll forward to the next trading day ('following'); "
+          f"a roll of more than {MAX_OBSERVATION_GAP_DAYS} calendar days is flagged as an unresolved data gap.")
 
     fetch_start = launch_start
     fetch_end = data_as_of + pd.Timedelta(days=1)  # yfinance `end` is exclusive of the boundary itself
@@ -975,11 +874,10 @@ def backtest_product(name, terms):
     insufficient_history = data_start > launch_start
     if insufficient_history:
         print(f"  WARNING - insufficient history: requested LAUNCH_START {launch_start.date()} predates "
-              f"available data ({data_start.date()}); launches before {data_start.date()} were NOT tested. "
-              f"The requested launch period was only PARTIALLY covered.")
+              f"available data ({data_start.date()}); launches before {data_start.date()} were NOT tested.")
     if data_end < launch_end:
         print(f"  WARNING: available data ends {data_end.date()}, before requested LAUNCH_END "
-              f"{launch_end.date()}; the tested launch period was clipped to the data actually available.")
+              f"{launch_end.date()}; tested launch period was clipped to the data actually available.")
 
     print_diagnostics(f"{basket_desc}{worst_of_note}", price_df, tickers, terms, launch_start, launch_end, data_as_of)
 
@@ -990,9 +888,7 @@ def backtest_product(name, terms):
     safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in name)
     audit_csv = os.path.join(SCRIPT_DIR, f"{safe_name} - audit.csv")
     audit_df.to_csv(audit_csv, index=False)
-    print(f"\nPer-launch audit table ({n_total} rows, one row per launch date - initial prices, absolute "
-          f"strike/trigger levels, scheduled+actual observation dates and ratios, first autocall date, final "
-          f"valuation date, outcome, recovery fraction) saved to:\n  {audit_csv}")
+    print(f"\nPer-launch audit table ({n_total} rows) saved to:\n  {audit_csv}")
 
     cross_check_rate = cross_check_autocall_rate(audit_df, terms, obs_offsets)
 
@@ -1045,7 +941,7 @@ def backtest_product(name, terms):
     print(f"  OUTSTANDING          {n_outstanding:>6} / {n_total}  ({n_outstanding / n_total:.1%})")
     print(f"  Reached maturity (MATURITY_CASH + PHYSICAL_DELIVERY): {n_reached_maturity} ({n_reached_maturity / n_total:.1%})")
     print(f"  Repaid at par, subtotal (AUTOCALL + MATURITY_CASH):   {n_repaid_at_par} ({n_repaid_at_par / n_total:.1%})"
-          f"  <- a subtotal of two outcomes, not a fourth bucket, and not a capital-protection guarantee")
+          f"  <- a subtotal of two outcomes, not a capital-protection guarantee")
     print(f"{'-' * 72}")
     print(f"First autocall by observation month (must sum to total AUTOCALL = {n_autocall}):")
     for m in obs_offsets:
@@ -1055,32 +951,28 @@ def backtest_product(name, terms):
     assert sum(month_counts.get(m, 0) for m in obs_offsets) == n_autocall
     print(f"{'-' * 72}")
     if n_completed:
-        print(f"COMPLETED-TENOR COHORT ONLY (nominal maturity date <= {data_as_of.date()}; n={n_completed} of "
-              f"{n_total} total launches - excludes {n_total - n_completed} launches that are still outstanding "
-              f"or too recent for their nominal maturity to have occurred yet; a launch that already autocalled "
-              f"early but whose nominal maturity is still in the future is also excluded here, so recent fast-"
-              f"resolving autocalls aren't mixed into a cohort that still has its still-open siblings removed):")
+        print(f"COMPLETED-TENOR COHORT ONLY (nominal maturity <= {data_as_of.date()}; n={n_completed} of "
+              f"{n_total}; excludes still-outstanding and still-open-early-autocall launches - see README "
+              f"\"The four outcomes reported\"):")
         for label in ("AUTOCALL", "MATURITY_CASH", "PHYSICAL_DELIVERY"):
             c = counts_completed.get(label, 0)
             print(f"  {label:<18}{c:>6} / {n_completed}  ({c / n_completed:.1%})")
     else:
-        print("COMPLETED-TENOR COHORT: empty - no launch in the tested period has a nominal maturity date on or "
-              "before the data cutoff yet; every launch is still OUTSTANDING. Final-outcome percentages cannot "
-              "be reported for this product/window.")
+        print("COMPLETED-TENOR COHORT: empty - every launch in this window is still OUTSTANDING.")
     print(f"{'-' * 72}")
     if n_delivery:
         avg_recovery = np.mean([r["recovery_fraction"] for r in results if r["outcome"] == "PHYSICAL_DELIVERY"])
         print(f"Average recovery on physical delivery (as % of par): {avg_recovery:.1%}")
     print(f"Cross-check: audit-table-reconstructed AUTOCALL rate = {cross_check_rate:.1%}  "
-          f"(matches the reported rate {reported_rate:.1%} exactly - see the independent cross-check line above)")
+          f"(matches the reported rate {reported_rate:.1%} exactly)")
+    print(f"For a percentages-only quick report with no audit CSV/charts, run \"FCN Condensed.py\".")
 
     # --- By launch-year cohort ---
     cohorts = yearly_breakdown(results)
-    print(f"\n{'-' * 72}\nBy launch-year cohort (same STRIKE/AUTOCALL_TRIGGER, launches grouped by year; a year "
-          f"straddling or after {data_as_of.date()} will show a nonzero OUTSTANDING share - that's expected, "
-          f"not a bug):")
-    print(f"  Outcome mix is a % of that year's launches; the two return columns are the ACTUAL underlying's own "
-          f"avg return (not the note's payoff) - cross-check the outcome mix against them directly.")
+    print(f"\n{'-' * 72}\nBy launch-year cohort (a year straddling or after {data_as_of.date()} will show a "
+          f"nonzero OUTSTANDING share - expected, not a bug):")
+    print(f"  Outcome mix is a % of that year's launches; the two return columns are the underlying's OWN "
+          f"return (not the note's payoff) - cross-check the outcome mix against them directly.")
     print(f"  {'Year':<6}{'n':>6}{'Autocall':>10}{'MatCash':>10}{'Delivery':>10}{'Outst.':>9}   |{'Avg max ret.':>14}{'Avg term. ret.':>16}")
     for year, c in cohorts.items():
         avg_max = c["sum_max_return_pct"] / c["n"]
@@ -1088,41 +980,11 @@ def backtest_product(name, terms):
         print(f"  {year:<6}{c['n']:>6}{c['autocall'] / c['n']:>9.1%} {c['maturity_cash'] / c['n']:>9.1%} "
               f"{c['delivery'] / c['n']:>9.1%} {c['outstanding'] / c['n']:>8.1%}   |{avg_max:>+13.1f}%{avg_term:>+13.1f}%")
 
-    # --- Outcome mix over time, stacked by launch-year cohort ---
-    years = list(cohorts.keys())
-    autocall_pct = [cohorts[y]["autocall"] / cohorts[y]["n"] * 100 for y in years]
-    maturity_pct = [cohorts[y]["maturity_cash"] / cohorts[y]["n"] * 100 for y in years]
-    delivery_pct = [cohorts[y]["delivery"] / cohorts[y]["n"] * 100 for y in years]
-    outstanding_pct = [cohorts[y]["outstanding"] / cohorts[y]["n"] * 100 for y in years]
-
-    fig, ax = plt.subplots(figsize=(max(8, len(years) * 0.4), 5.5))
-    ax.bar(years, autocall_pct, color="dodgerblue", width=0.7, label="AUTOCALL (early, at par)")
-    bottom1 = autocall_pct
-    ax.bar(years, maturity_pct, bottom=bottom1, color="seagreen", width=0.7, label="MATURITY_CASH (full tenor, capital back)")
-    bottom2 = [a + m for a, m in zip(autocall_pct, maturity_pct)]
-    ax.bar(years, delivery_pct, bottom=bottom2, color="firebrick", width=0.7, label="PHYSICAL_DELIVERY (capital loss)")
-    bottom3 = [b + d for b, d in zip(bottom2, delivery_pct)]
-    ax.bar(years, outstanding_pct, bottom=bottom3, color="lightgrey", width=0.7, label="OUTSTANDING (not yet resolved)")
-    ax.set_ylabel("Share of that launch year's daily launches (%)")
-    ax.set_ylim(0, 100)
-    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, frameon=False, fontsize=8)
-    ax.grid(True, axis="y", which="major", color="lightgrey", linewidth=0.6)
-    ax.set_axisbelow(True)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right")
-    ax.set_title(
-        f"FCN Rolling Backtest - {name}: {basket_desc}{worst_of_note}, by launch year\n"
-        f"Strike {strike:.0%} / Autocall {trigger:.0%} / Tenor {tenor_months}m "
-        f"({n_total} launches, {results[0]['launch_date'].date()} to {results[-1]['launch_date'].date()}, "
-        f"data as-of {data_as_of.date()})",
-        fontsize=10,
-    )
-    fig.tight_layout()
-    output_png = os.path.join(SCRIPT_DIR, f"{safe_name}.png")
-    plt.savefig(output_png, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Chart saved to {output_png}")
+    bar_png = plot_outcome_mix_by_year(cohorts, terms, name, basket_desc, worst_of_note, n_total, results,
+                                        data_as_of, safe_name)
+    growth_png = plot_growth_with_launch_outcomes(price_df, tickers, results, terms, name, basket_desc,
+                                                   worst_of_note, data_as_of, safe_name)
+    print(f"Charts saved to {bar_png}\n  and {growth_png}")
 
     return {
         "name": name, "n_total": n_total, "n_autocall": n_autocall, "n_maturity_cash": n_maturity_cash,
@@ -1141,24 +1003,14 @@ if __name__ == "__main__":
 
     print(
         f"\n{'!' * 72}\n"
-        "OVERLAPPING-LAUNCH CAVEAT - read before trusting any percentage below.\n"
+        "OVERLAPPING-LAUNCH CAVEAT: launches happen every trading day and overlap almost entirely, so\n"
+        "they are NOT independent trials - treat any 'N launches, X% autocalled' figure as a description\n"
+        "of this one historical path, not a frequentist probability estimate. See README.md \"Known\n"
+        "biases\" and \"SEPARATE CAVEAT\" sections before trusting any percentage below.\n"
         f"{'!' * 72}\n"
-        "Every product here is launched on EVERY trading day of the requested period, and consecutive daily\n"
-        "launches of a note this long overlap almost entirely - a note launched on a Tuesday and one launched\n"
-        "the next Wednesday are exposed to nearly the same forward window. That makes the launches highly\n"
-        "DEPENDENT on each other, not independent trials, so treat any 'N launches, X% autocalled' figure as a\n"
-        "description of what this one historical path produced under daily rolling launches, not a frequentist\n"
-        "probability estimate with N independent draws behind it. Overlap alone does not mechanically push the\n"
-        "observed percentage up or down in either direction - it just means the effective sample size is much\n"
-        "smaller than the raw launch count. The by-launch-year cohort table below is a better guide to how much\n"
-        "the outcome mix actually varies than the one blended headline number is. Separately: this is also just\n"
-        "ONE realized historical path over ONE macro regime for this underlying - a different window or a\n"
-        "different name could look very different, and this script makes no claim about which one is 'typical'.\n"
-        "See the per-product 'CONTRACT / DATA ASSUMPTIONS' notes in the module docstring for what this script\n"
-        "does and doesn't model (settlement lag, corporate actions, coupon economics, discounting).\n"
     )
 
-    summaries = [backtest_product(name, terms) for name, terms in PRODUCTS.items()]
+    summaries = [backtest_product(terms) for terms in PRODUCTS]
 
     print(f"\n{'=' * 72}\nSUMMARY ACROSS PRODUCTS\n{'=' * 72}")
     for s in summaries:

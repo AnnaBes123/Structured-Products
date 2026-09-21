@@ -24,6 +24,9 @@ other, even when they share an underlying and a strike.
 - `README.md` — product framing, terminology, scope/limitations.
 - `MATHEMATICS.md` (where the replication is non-trivial, e.g. barrier products) — full derivation
   and verification checks (parity, closed-form convergence, degenerate-limit checks).
+- `DEVLOG.md` (as of 2026-09-21, new/edited files only — see "Documentation density" below) —
+  chronological decision history: why something is built the way it is, rejected alternatives,
+  bugs that got fixed. Not required retroactively for files that don't already have one.
 - Shared helpers live in `Product MtM/_common.py` (data fetching, vol/rate proxies, QuantLib process
   construction, ZCB pricing) - add there instead of duplicating a helper into a new product folder.
 
@@ -72,10 +75,20 @@ to FRED for S&P 500/VIX series). `pip install -r requirements.txt` from a venv f
 folder's own README for exact commands and prerequisites (the R companion additionally needs
 `rugarch`, `rmgarch`, `quantmod`, `xts` from CRAN).
 
-## Documentation density is intentional here
+## Documentation density is intentional here — but code itself stays terse (as of 2026-09-21)
 
-This repo explains *why*, at length, in module docstrings, inline comments on non-obvious
-subtleties, and dedicated README/MATHEMATICS.md sections - a deliberate departure from a terser
-default, because the user is actively learning this material and needs to be able to independently
-follow and verify the reasoning, not just trust the output. Match that density when extending
-existing files in this repo; don't strip comments down to a terser house style.
+The *reasoning* in this repo is explained at length, because the user is actively learning this
+material and needs to be able to independently follow and verify it, not just trust the output.
+That density still belongs somewhere - it's just no longer inline in the code. As of 2026-09-21:
+
+- Code comments/docstrings in `.py` files: short, WHY-only, one line where possible - what a reader
+  needs to not misread the code, nothing more.
+- Long-form rationale, design history, rejected alternatives, and bug-fix explanations go in that
+  folder's `DEVLOG.md` (chronological, dated entries).
+- `README.md` (and `MATHEMATICS.md` where present) still carry the full current-state explanation
+  of what the product/tool is and how it works - that hasn't gotten terser, only the code has.
+
+This applies going forward, to new files and to files being edited anyway - it is not a mandate to
+retroactively rewrite every existing file's comments. A file without a `DEVLOG.md` yet just hasn't
+been touched since this convention started; don't take that as license to strip its comments without
+also creating one.

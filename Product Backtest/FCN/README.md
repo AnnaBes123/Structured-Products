@@ -64,9 +64,11 @@ above where it started, at any point in a 12-month window" can be a fairly low b
 enough history purely because of long-run drift, regardless of how volatile the ride was -
 independent of whether 100%/quarterly is actually a sensible level for that specific underlying.
 
-So `FCN.py` now backtests a `PRODUCTS` dict, one entry per note, each with its own
-`TICKERS`/`STRIKE`/`AUTOCALL_TRIGGER`/`TENOR_MONTHS`/`AUTOCALL_FREQUENCY_MONTHS`. Before printing
-that product's headline outcome breakdown, the script prints an **"Observed underlying behavior"**
+So `FCN.py` now backtests a `PRODUCTS` list, one entry per note, each with its own
+`TICKERS`/`STRIKE`/`AUTOCALL_TRIGGER`/`TENOR_MONTHS`/`AUTOCALL_FREQUENCY_MONTHS`. Each product's
+display name/filenames are derived from its `TICKERS` (`product_label`), not hand-maintained, so
+changing `TICKERS` alone is enough - nothing else needs renaming to match. Before printing that
+product's headline outcome breakdown, the script prints an **"Observed underlying behavior"**
 block built directly from that product's own ticker(s) — independent of whatever STRIKE/
 AUTOCALL_TRIGGER it's actually configured with:
 
@@ -206,7 +208,7 @@ and classified - not just the subset whose full tenor happens to already be obse
 whose nominal maturity is still in the future relative to `DATA_AS_OF` is reported as OUTSTANDING
 rather than silently dropped from the population (see "The four outcomes reported" above).
 
-Each entry in the `PRODUCTS` dict is one fully independent note:
+Each entry in the `PRODUCTS` list is one fully independent note:
 
 | Setting | Meaning |
 |---|---|
@@ -284,6 +286,21 @@ ratios, first autocall date, final valuation date, outcome, recovery fraction) a
 script, runs an independent cross-check of the reported AUTOCALL rate against that audit table,
 prints the all-launches and completed-tenor-cohort outcome breakdowns, the first-autocall-by-month
 counts, the by-launch-year cohort table, and saves a 100%-stacked outcome-by-launch-year bar chart
-named after that product (e.g. `AAPL FCN.png`). Ends with a one-line-per-product summary table.
-Charts and audit CSVs here are ad hoc, run-specific exploration output (like `Estimators/`, not
-like `Product MtM/`) and are gitignored — see `.gitignore` in this folder.
+named after that product (e.g. `AAPL FCN.png`), and a second chart plotting the underlying's growth
+path with one dot per launch colored by its outcome (`AAPL FCN - growth.png`). Ends with a
+one-line-per-product summary table. Charts and audit CSVs here are ad hoc, run-specific exploration
+output (like `Estimators/`, not like `Product MtM/`) and are gitignored — see `.gitignore` in this
+folder.
+
+Two companion scripts, same folder:
+
+- **`FCN Condensed.py`** — imports `FCN.py`'s own fetching/classification (not duplicated) and
+  prints just the outcome percentages for every entry in `PRODUCTS` - no audit CSV, no charts, no
+  diagnostics, no synthetic tests. Use this for a quick rerun once you trust `FCN.py`'s numbers.
+- **`FCN XLSX.py`** — a compact, fully self-contained reimplementation (no import from `FCN.py` or
+  anything else in this repo) that writes the same percentages to `FCN Percentages.xlsx` instead of
+  the terminal. Deliberately portable: copy this one file anywhere and run it with nothing but
+  `pip install pandas yfinance openpyxl`. Edit the `TICKERS`/`STRIKE`/... constants at the top of
+  the file directly - it has no `PRODUCTS` list, just one product per run. Use `FCN.py` instead
+  whenever correctness under edge cases (data gaps, basket calendar mismatches) matters more than
+  portability - this script doesn't share, or get exercised by, `FCN.py`'s synthetic test suite.
