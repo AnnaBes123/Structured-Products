@@ -49,88 +49,66 @@ compact reimplementation, not a shared code path, same caveat as FCN XLSX.py.
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 
 params_raw = xl("Params!A1:B8")                          # <-- adjust range to your Params table
-params = dict(zip(params_raw.iloc[:, 0], params_raw.iloc[:, 1]))   # label (col A) -> value (col B)
-STRIKE = float(params["Strike"])
-AUTOCALL_TRIGGER = float(params["Autocall Trigger"])
-TENOR_MONTHS = int(params["Tenor Months"])
-AUTOCALL_FREQUENCY_MONTHS = int(params["Autocall Frequency Months"])   # 0 = disabled
-AUTOCALL_LOCKOUT_MONTHS = int(params["Autocall Lockout Months"])
-MAX_OBSERVATION_GAP_DAYS = int(params["Max Gap Days"])
-launch_start_raw = params["Launch Start"]
-launch_end_raw = params["Launch End"]
+p = dict(zip(params_raw.iloc[:, 0], params_raw.iloc[:, 1]))   # label (col A) -> value (col B)
+STRIKE, AUTOCALL_TRIGGER = float(p["Strike"]), float(p["Autocall Trigger"])
+TENOR_MONTHS = int(p["Tenor Months"])
+AUTOCALL_FREQUENCY_MONTHS = int(p["Autocall Frequency Months"])   # 0 = disabled
+AUTOCALL_LOCKOUT_MONTHS, MAX_GAP_DAYS = int(p["Autocall Lockout Months"]), int(p["Max Gap Days"])
 
 prices_df = xl("Prices!A1:B100000", headers=True)        # <-- oversized on purpose, see docstring
 prices_df = prices_df.dropna().set_index(prices_df.columns[0]).sort_index()
-tickers = list(prices_df.columns)
-all_dates = prices_df.index
-prices = prices_df.to_numpy()
+all_dates, prices = prices_df.index, prices_df.to_numpy()
+ticker_label = xl("Prices!I2")   # <-- wherever you actually typed the ticker for FactSet's formula
 
-launch_start = pd.Timestamp(launch_start_raw)
+launch_start = pd.Timestamp(p["Launch Start"])
 data_as_of = all_dates.max()
-launch_end = data_as_of if pd.isna(launch_end_raw) else pd.Timestamp(launch_end_raw)
+launch_end = data_as_of if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
+
+obs_offsets = ([] if not AUTOCALL_FREQUENCY_MONTHS else
+               list(range(AUTOCALL_LOCKOUT_MONTHS + AUTOCALL_FREQUENCY_MONTHS, TENOR_MONTHS, AUTOCALL_FREQUENCY_MONTHS)))
 
 
-def obs_offsets():
-    if not AUTOCALL_FREQUENCY_MONTHS:
-        return []
-    start = AUTOCALL_LOCKOUT_MONTHS + AUTOCALL_FREQUENCY_MONTHS
-    return list(range(start, TENOR_MONTHS, AUTOCALL_FREQUENCY_MONTHS))
-
-
-def map_obs(target, dates):
-    pos = int(dates.searchsorted(target))
-    if pos >= len(dates) or (dates[pos] - target).days > MAX_OBSERVATION_GAP_DAYS:
-        return None
-    return pos
+def map_obs(target):
+    pos = int(all_dates.searchsorted(target))
+    return None if pos >= len(all_dates) or (all_dates[pos] - target).days > MAX_GAP_DAYS else pos
 
 
 def classify(i):
     s0 = prices[i]
-    launch_date = all_dates[i]
-    maturity_cal = launch_date + pd.DateOffset(months=TENOR_MONTHS)
-    j = map_obs(maturity_cal, all_dates) if maturity_cal <= data_as_of else None
-    for m in obs_offsets():
-        obs_cal = launch_date + pd.DateOffset(months=m)
+    j = map_obs(all_dates[i] + pd.DateOffset(months=TENOR_MONTHS))
+    for m in obs_offsets:
+        obs_cal = all_dates[i] + pd.DateOffset(months=m)
         if obs_cal > data_as_of:
             break
-        pos = map_obs(obs_cal, all_dates)
+        pos = map_obs(obs_cal)
         if pos is None or pos <= i or (j is not None and pos >= j):
             continue
         if (prices[pos] / s0).min() >= AUTOCALL_TRIGGER:
             return "AUTOCALL", j is not None
-    if j is not None:
-        worst = (prices[j] / s0).min()
-        return ("MATURITY_CASH" if worst >= STRIKE else "PHYSICAL_DELIVERY"), True
-    return "OUTSTANDING", False
+    if j is None:
+        return "OUTSTANDING", False
+    worst = (prices[j] / s0).min()
+    return ("MATURITY_CASH" if worst >= STRIKE else "PHYSICAL_DELIVERY"), True
 
 
-launch_positions = [i for i, d in enumerate(all_dates) if launch_start <= d <= launch_end]
-outcomes, completed = [], []
-for i in launch_positions:
-    outcome, is_completed = classify(i)
-    outcomes.append(outcome)
-    if is_completed:
-        completed.append(outcome)
+rows = [classify(i) for i, d in enumerate(all_dates) if launch_start <= d <= launch_end]
+outcomes, completed = [o for o, c in rows], [o for o, c in rows if c]
 
 
-def pct(bucket, of):
-    return of.count(bucket) / len(of) if of else None
-
-
-def fmt_pct(x):
-    return f"{x:.1%}" if x is not None else "n/a"
+def fmt_pct(bucket, of):
+    return f"{of.count(bucket) / len(of):.3%}" if of else "n/a"
 
 
 result = pd.DataFrame([
-    ("Product", "/".join(tickers) + " FCN"),
+    ("Product", f"{ticker_label} FCN"),
     ("Launches", len(outcomes)),
-    ("Autocall %", fmt_pct(pct("AUTOCALL", outcomes))),
-    ("Maturity Cash %", fmt_pct(pct("MATURITY_CASH", outcomes))),
-    ("Physical Delivery %", fmt_pct(pct("PHYSICAL_DELIVERY", outcomes))),
-    ("Outstanding %", fmt_pct(pct("OUTSTANDING", outcomes))),
+    ("Autocall %", fmt_pct("AUTOCALL", outcomes)),
+    ("Maturity Cash %", fmt_pct("MATURITY_CASH", outcomes)),
+    ("Physical Delivery %", fmt_pct("PHYSICAL_DELIVERY", outcomes)),
+    ("Outstanding %", fmt_pct("OUTSTANDING", outcomes)),
     ("Completed Launches", len(completed)),
-    ("Completed Autocall %", fmt_pct(pct("AUTOCALL", completed))),
-    ("Completed Maturity Cash %", fmt_pct(pct("MATURITY_CASH", completed))),
-    ("Completed Physical Delivery %", fmt_pct(pct("PHYSICAL_DELIVERY", completed))),
+    ("Completed Autocall %", fmt_pct("AUTOCALL", completed)),
+    ("Completed Maturity Cash %", fmt_pct("MATURITY_CASH", completed)),
+    ("Completed Physical Delivery %", fmt_pct("PHYSICAL_DELIVERY", completed)),
 ], columns=["Metric", "Value"])
 result
