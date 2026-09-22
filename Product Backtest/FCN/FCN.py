@@ -59,7 +59,7 @@ INITIAL_VALUE = 1.00   # always 1.00 by construction (each underlying normalized
                         # level); named so STRIKE/AUTOCALL_TRIGGER read as "fraction of", not a price
 
 # Explicit launch-period / data-cutoff boundaries, shared across every product in PRODUCTS.
-LAUNCH_START = "2001-09-18"   # first candidate launch date (inclusive)
+LAUNCH_START = "2001-01-02"   # first candidate launch date (inclusive)
 LAUNCH_END = None              # last candidate launch date (inclusive); None -> DATA_AS_OF
 DATA_AS_OF = None              # price-data cutoff (inclusive); None -> most recent COMPLETE
                                 # calendar day before now (see resolve_run_dates)

@@ -185,6 +185,17 @@ harmless - only one that's too SMALL silently truncates real data. Bumped it to 
 (centuries of daily data) once, and it should never need bumping again for a wider date range -
 only widening (more columns) if a worst-of basket adds more tickers.
 
+## Ticker label read from its own cell, not the price table's column header (2026-09-21)
+
+The Product label was derived from the price table's own column header (`tickers =
+list(prices_df.columns)`), which showed "Close FCN" instead of e.g. "PFE FCN" because FactSet's
+pull auto-labeled that column "Close" rather than the ticker. Simplest fix is renaming that header
+cell in Excel to the actual ticker - no code change needed, since the label is already derived from
+it. If you'd rather leave FactSet's own header alone, the code instead reads the ticker from its own
+cell via `xl("Prices!I2")` (adjust to wherever you actually typed it for the FactSet formula) and
+uses that for the label - re-verified against the stubbed-AMD test with the price column
+deliberately left named "Close" to confirm the label now comes from the separate cell instead.
+
 ## Output as a vertical Metric/Value table, percentages pre-formatted as text (2026-09-21)
 
 The result table was one wide row (`Product | Launches | Autocall % | ...`, 10 columns) with raw
