@@ -26,7 +26,7 @@ Everything lives on one sheet, "BRC":
 """
 
 params_raw = xl("BRC!D1:E8")
-p = dict(zip(params_raw.iloc[:, 0], params_raw.iloc[:, 1]))
+p = dict(zip(params_raw.iloc[:, 0].str.strip(), params_raw.iloc[:, 1]))
 TICKER, STRIKE, BARRIER = p["Ticker"], float(p["Strike"]), float(p["Barrier"])
 AMERICAN = str(p["Barrier Monitoring"]).strip().upper().startswith("A")
 TENOR_MONTHS, MAX_GAP_DAYS = int(p["Tenor Months"]), int(p["Max Gap Days"])

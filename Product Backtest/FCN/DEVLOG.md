@@ -185,6 +185,17 @@ harmless - only one that's too SMALL silently truncates real data. Bumped it to 
 (centuries of daily data) once, and it should never need bumping again for a wider date range -
 only widening (more columns) if a worst-of basket adds more tickers.
 
+## Trimmed further (2026-09-22)
+
+Same trims as `Product Backtest/RC/RC Python-in-Excel.py` / `Product Backtest/BRC/BRC
+Python-in-Excel.py` (see BRC's DEVLOG.md for the two bugs the first attempt at this introduced
+elsewhere and how they were caught - applied carefully here from the start): merged `map_obs` down
+to one return expression and dropped its now-redundant second `dates` argument (it only ever got
+called with `all_dates`), turned `obs_offsets()` from a function into a precomputed list (it never
+depended on anything per-launch), folded `pct`+`fmt_pct` into one function, and combined related
+assignments with tuple-unpacking. Re-verified against the same stubbed-AMD test - matches exactly
+(71.1%/6.3%/21.3%/1.2%, completed 71.2%/6.6%/22.2%).
+
 ## Ticker label read from its own cell, not the price table's column header (2026-09-21)
 
 The Product label was derived from the price table's own column header (`tickers =
