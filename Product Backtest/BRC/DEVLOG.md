@@ -18,6 +18,13 @@ Added a monitoring-mode toggle the `Product MtM` version doesn't need (it only e
 American checks it on every trading day from launch through maturity (a running-min touch test,
 closer to what `Product MtM`'s `path.cummin() <= barrier_level` does daily).
 
+## Whitespace-stripped param labels (2026-09-22)
+
+Same backport as `Product Backtest/RC/DEVLOG.md` describes - FCN hit a real `KeyError: 'Strike'` in
+Excel, fixed there by stripping whitespace off Params labels before building the dict; applied here
+too since BRC builds its Params dict identically. Re-verified against the stubbed-AMD test in both
+monitoring modes - unchanged (European 72.5%/23.5%/4.0%, American 60.9%/35.1%/4.0%).
+
 ## Trimmed further, ~67 -> ~48 lines of code (2026-09-22)
 
 Merged `map_obs`'s two-line `if` into one `return`, folded `pct`+`fmt_pct` into a single function,

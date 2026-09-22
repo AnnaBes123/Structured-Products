@@ -21,6 +21,14 @@ Kept to one sheet ("RC": A:B price pull, D:E params, G1 the `=PY()` formula) and
 request - simpler than FCN's three-sheet layout mainly because there's no autocall-observation loop
 or its parameters (frequency/lockout) to plumb through.
 
+## Whitespace-stripped param labels (2026-09-22)
+
+FCN's version hit a real `KeyError: 'Strike'` in Excel (a stray space or copy/paste artifact in the
+label cell being the most likely cause) - fixed there by stripping whitespace off the Params labels
+before building the dict. Backported the same one-line fix here even though RC hadn't hit the error
+yet, since it builds its Params dict the identical way and is equally exposed. Re-verified against
+the stubbed-AMD test - unchanged (61.7%/34.3%/4.0%).
+
 ## Trimmed further (2026-09-22)
 
 Same trims as `Product Backtest/BRC/BRC Python-in-Excel.py` (see its DEVLOG.md for the two bugs

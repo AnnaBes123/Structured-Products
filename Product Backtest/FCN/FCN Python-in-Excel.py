@@ -49,7 +49,7 @@ compact reimplementation, not a shared code path, same caveat as FCN XLSX.py.
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 
 params_raw = xl("Params!A1:B8")                          # <-- adjust range to your Params table
-p = dict(zip(params_raw.iloc[:, 0], params_raw.iloc[:, 1]))   # label (col A) -> value (col B)
+p = dict(zip(params_raw.iloc[:, 0].str.strip(), params_raw.iloc[:, 1]))   # label (col A, whitespace-trimmed) -> value (col B)
 STRIKE, AUTOCALL_TRIGGER = float(p["Strike"]), float(p["Autocall Trigger"])
 TENOR_MONTHS = int(p["Tenor Months"])
 AUTOCALL_FREQUENCY_MONTHS = int(p["Autocall Frequency Months"])   # 0 = disabled
