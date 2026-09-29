@@ -23,7 +23,7 @@ itself, not of any one product's parameters:
    "what this product would typically do."
 2. **Survivorship bias, single-name products only.** A single-name `TICKERS` entry is, by
    construction, a name that's still listed today — a company that got delisted or went bankrupt at
-   some point never gets tested, because nobody thinks to plug a dead ticker into `PRODUCTS`. This
+   some point never gets tested, because nobody thinks to plug a dead ticker into `TICKERS`. This
    doesn't apply to a broad index (constituents get replaced when a company fails, rather than the
    index itself vanishing), but it does apply to every single-name product in this file.
 
@@ -64,29 +64,14 @@ above where it started, at any point in a 12-month window" can be a fairly low b
 enough history purely because of long-run drift, regardless of how volatile the ride was -
 independent of whether 100%/quarterly is actually a sensible level for that specific underlying.
 
-So `FCN.py` now backtests a `PRODUCTS` list, one entry per note, each with its own
-`TICKERS`/`STRIKE`/`AUTOCALL_TRIGGER`/`TENOR_MONTHS`/`AUTOCALL_FREQUENCY_MONTHS`. Each product's
-display name/filenames are derived from its `TICKERS` (`product_label`), not hand-maintained, so
-changing `TICKERS` alone is enough - nothing else needs renaming to match. Before printing that
-product's headline outcome breakdown, the script prints an **"Observed underlying behavior"**
-block built directly from that product's own ticker(s) — independent of whatever STRIKE/
-AUTOCALL_TRIGGER it's actually configured with:
-
-- **Annualized realized volatility**, computed from **log returns** (same convention as
-  `Product MtM/_common.py`'s `realized_annualized_vol`) over the whole fetched history — AAPL
-  comes in around 38%, GME around 77%, immediately signalling that the same 70% strike is a very
-  different bet on each name.
-- **P(worst-of clears a candidate trigger at some observation)** for a small grid of trigger
-  levels (90%/95%/100%/105%/110%) — read off this row for whatever `AUTOCALL_FREQUENCY_MONTHS`
-  the product uses before picking `AUTOCALL_TRIGGER`, rather than guessing.
-- **P(worst-of finishes below a candidate strike at maturity, IGNORING autocall)** for a small
-  grid of strikes (50%/60%/70%/80%/90%) — the raw terminal-breach rate, useful for picking
-  `STRIKE` and for sanity-checking the actual (much lower) PHYSICAL_DELIVERY number once autocall is
-  factored back in (see next section for why they differ so much).
-
-None of this feeds back into the backtest automatically — `STRIKE`/`AUTOCALL_TRIGGER` are still
-set by hand per product. The diagnostic just gives you the same thing an issuer would have when
-actually structuring a note on that name, instead of a number that merely sounds plausible.
+So each run of `FCN.py` is one note, with its own `TICKERS`/`STRIKE`/`AUTOCALL_TRIGGER`/
+`TENOR_MONTHS`/`AUTOCALL_FREQUENCY_MONTHS` set at the top of the file. The report title and output
+filenames come from `TICKERS`, so changing `TICKERS` is enough on its own. Pick `STRIKE`/
+`AUTOCALL_TRIGGER` with that underlying's own behavior in mind. The quickest check is to run
+`RC.py` (`Product Backtest/RC/`) on the same ticker. Its PHYSICAL_DELIVERY rate is the raw
+"finishes below strike, ignoring autocall" rate. The long `FCN.py` (in git history before the
+2026-09-29 rewrite) printed a vol/trigger/strike diagnostic grid for this; the rewrite dropped it
+(see DEVLOG.md).
 
 ## Why "rolling" and not one fixed backtest
 
@@ -132,7 +117,7 @@ completed-tenor cohort, depending on the report).
 
 ### Why the PHYSICAL_DELIVERY rate can be much lower than the raw "finishes below strike" rate
 
-The diagnostic block's "P(finishes below strike at maturity, ignoring autocall)" and the
+The raw "P(finishes below strike at maturity, ignoring autocall)" (= `RC.py` on the same terms) and the
 PHYSICAL_DELIVERY percentage look at the same underlying data but answer different questions, and
 the gap between them can be large for a trending underlying. The mechanism: **autocall removes
 paths from the maturity-tested pool before they get a chance to breach** — of the windows that
@@ -141,9 +126,7 @@ down (or up, before turning down) and get redeemed at par before that decline pl
 autocalled, a note is no longer exposed to what the underlying does afterward. Only the minority
 that finish below strike *and never once touched the trigger* end up as PHYSICAL_DELIVERY. A low
 PHYSICAL_DELIVERY number next to a much higher "ignoring autocall" number is this mechanism
-working as intended, not a bug - each product's own numbers can be sanity-checked this way from
-its own console output; there's also an independent audit-table cross-check for the AUTOCALL rate
-specifically (see next section).
+working as intended, not a bug.
 
 ## By launch-year cohort: don't trust the one blended headline number either
 
@@ -155,14 +138,12 @@ year the note could have launched in, now with an explicit OUTSTANDING segment f
 recent to have fully resolved) right after the headline numbers - that per-year breakdown is what
 to actually look at, not the single blended figure.
 
-The cohort table's last two columns - **avg max return** and **avg terminal return** - are the
-underlying's OWN actual return for that cohort (not the note's payoff): the average, across that
-year's launches, of the highest ratio-to-launch-level reached at any point in the observed window
-("avg max ret.") and of the ratio at the end of that window ("avg term. ret." - at maturity for a
-resolved launch, as of `DATA_AS_OF` for an OUTSTANDING one). These exist so a suspicious-looking
-outcome mix can be checked against the real data directly instead of taken on faith - an
-all-autocall year should show a strongly positive avg max/terminal return alongside it; if it
-doesn't, that's a sign to go check the audit CSV for that year's launches directly.
+The cohort table's last column, **AvgUnderlyingRet**, is the underlying's OWN worst-of return
+(not the note's payoff), averaged across that year's launches. It is measured at maturity for a
+resolved launch and as of the data cutoff for an OUTSTANDING one. It is there so a
+suspicious-looking outcome mix can be checked against the real data instead of taken on faith. An
+all-autocall year will usually show a positive average, but not always: an autocalled note can
+still be down by maturity. If a year looks off, check that year's launches in the audit CSV.
 
 ## SEPARATE CAVEAT: these are also not independent trials
 
@@ -192,38 +173,37 @@ forward, resolved some previously-OUTSTANDING launches, and can shift the mix of
 
 ## Launch period, data cutoff, and product terms
 
-`LAUNCH_START` / `LAUNCH_END` / `DATA_AS_OF` (top of `FCN.py`, shared across every product in
-`PRODUCTS`) explicitly bound the run:
+`LAUNCH_START` / `LAUNCH_END` / `DATA_AS_OF` (top of `FCN.py`) explicitly bound the run:
 
 | Setting | Meaning |
 |---|---|
 | `LAUNCH_START` | first candidate launch date (inclusive) |
 | `LAUNCH_END` | last candidate launch date (inclusive); `None` -> resolves to `DATA_AS_OF` |
 | `DATA_AS_OF` | price-data cutoff (inclusive); `None` -> resolves to the most recent COMPLETE calendar day before now, so an in-progress trading session's close is never used |
-| `INITIAL_VALUE` | the 100% reference each ratio is measured against - always `1.00` by construction; named for clarity rather than left as a bare `1.00` |
-| `MAX_OBSERVATION_GAP_DAYS` | calendar-day tolerance for rolling a scheduled observation date forward to an actual trading day before it's flagged as an unresolved data gap instead of an ordinary holiday roll |
+| `MAX_GAP_DAYS` (in `../_backtest.py`, shared by all products) | calendar-day tolerance for rolling a scheduled observation date forward to an actual trading day before it's flagged as an unresolved data gap instead of an ordinary holiday roll |
 
 Every trading day the fetched data actually covers within `[LAUNCH_START, LAUNCH_END]` is launched
 and classified - not just the subset whose full tenor happens to already be observable. A launch
 whose nominal maturity is still in the future relative to `DATA_AS_OF` is reported as OUTSTANDING
 rather than silently dropped from the population (see "The four outcomes reported" above).
 
-Each entry in the `PRODUCTS` list is one fully independent note:
+The note's terms (also top of `FCN.py`), all levels as a fraction of each underlying's own launch
+level:
 
 | Setting | Meaning |
 |---|---|
-| `TICKERS` | 1 = single underlying; 2+ = worst-of basket; must be nonempty and unique |
-| `STRIKE` | conversion strike, fraction of `INITIAL_VALUE`; checked ONLY at maturity (no interim monitoring - see above) |
-| `AUTOCALL_TRIGGER` | worst-of level (fraction of `INITIAL_VALUE`) that triggers early redemption |
+| `TICKERS` | 1 = single underlying; 2+ = worst-of basket |
+| `STRIKE` | conversion strike; checked ONLY at maturity (no interim monitoring - see above) |
+| `AUTOCALL_TRIGGER` | worst-of level that triggers early redemption |
 | `TENOR_MONTHS` | note life in calendar months |
 | `AUTOCALL_FREQUENCY_MONTHS` | observation spacing (1 = monthly, 3 = quarterly, ...); `None` disables autocall |
 | `AUTOCALL_LOCKOUT_MONTHS` | nonnegative integer; months before the first autocall observation is even checked - the first observation actually falls at `LOCKOUT + FREQUENCY`, not at `LOCKOUT` itself (e.g. lockout 0 / quarterly -> first observation month 3; lockout 3 / quarterly -> first observation month 6, skipping month 3 entirely) |
 
 An observation date is always strictly after launch (never a "month-zero" autocall - enforced
-structurally, see `build_observation_offsets`) and must resolve strictly before the note's actual
+structurally, see `OBS_MONTHS`) and must resolve strictly before the note's actual
 maturity valuation date to count as an early-autocall check; one that resolves on or after that
 date is excluded from the early-autocall test and left to the ordinary terminal test at maturity
-instead (see `classify_launch` in `FCN.py`).
+instead (see `classify` in `FCN.py`).
 
 ## Scope and limitations
 
@@ -263,8 +243,8 @@ instead (see `classify_launch` in `FCN.py`).
   scenarios. A basket also drops any date where at least one ticker has no price (mismatched
   exchange calendars); the console reports how many dates that affected.
 - **Observation-to-trading-day mapping tolerance.** A scheduled observation date more than
-  `MAX_OBSERVATION_GAP_DAYS` calendar days from the nearest actual trading day is flagged as an
-  unresolved data gap rather than evaluated - see `map_observation` in `FCN.py`. This matters most
+  `MAX_GAP_DAYS` calendar days from the nearest actual trading day is flagged as an
+  unresolved data gap rather than evaluated - see `map_obs` in `../_backtest.py`. This matters most
   for thinly-covered or basket tickers; a continuously-listed single name like the current PFE
   default rarely triggers it in practice.
 
@@ -274,33 +254,22 @@ instead (see `classify_launch` in `FCN.py`).
 python3 "FCN.py"
 ```
 
-Runs a battery of synthetic correctness tests first (constructed price paths covering each
-outcome, boundary equalities, holiday vs. missing-data handling, cutoff/OUTSTANDING handling, and
-input validation - see `run_synthetic_tests` in `FCN.py`) and aborts before touching real data if
-any of them fail. Then prints the overlapping-launch caveat once, and backtests every entry in
-`PRODUCTS` in turn. For each: fetches data from `yfinance` (no FRED fallback beyond the plain
-`^GSPC`/`SP500` case already handled in `fetch_daily_closes`), trims it to `DATA_AS_OF`, prints the
-"Observed underlying behavior" diagnostic, saves a full per-launch audit table (one row per launch
-- initial prices, absolute strike/trigger levels, scheduled and actual observation dates and
-ratios, first autocall date, final valuation date, outcome, recovery fraction) as a CSV next to the
-script, runs an independent cross-check of the reported AUTOCALL rate against that audit table,
-prints the all-launches and completed-tenor-cohort outcome breakdowns, the first-autocall-by-month
-counts, the by-launch-year cohort table, and saves a 100%-stacked outcome-by-launch-year bar chart
-named after that product (e.g. `AAPL FCN.png`), and a second chart plotting the underlying's growth
-path with one dot per launch colored by its outcome (`AAPL FCN - growth.png`). Ends with a
-one-line-per-product summary table. Charts and audit CSVs here are ad hoc, run-specific exploration
-output (like `Estimators/`, not like `Product MtM/`) and are gitignored — see `.gitignore` in this
-folder.
+The per-product scripts (`FCN.py`, `../RC/RC.py`, `../BRC/BRC.py`, `../BSF/BSF.py`) only hold their
+terms and their `classify` rule. Everything shared lives once in `../_backtest.py`: the yfinance
+fetch, the gap-tolerant date mapping, the rolling launch loop, the report and the charts. Each run:
 
-Two companion scripts, same folder:
+1. Runs `self_test()`: synthetic worst-of paths covering each outcome, the inclusive strike/trigger
+   boundaries, no month-0 autocall, an observation colliding with maturity, and a gap-skipped
+   observation. The script aborts on the first failed assert, before touching real data.
+2. Fetches `TICKERS` from `yfinance`, trimmed to `DATA_AS_OF`. There is no FRED fallback.
+3. Prints the overlapping-launch caveat, the all-launches and completed-tenor-cohort breakdowns, and
+   the by-launch-year table.
+4. Saves a per-launch audit CSV (`Launch`, `Outcome`, `Completed`, `UnderlyingReturn`) and two
+   charts: `AMD FCN.png` (outcome mix by launch year) and `AMD FCN - growth.png` (price path with
+   one dot per launch, colored by outcome).
 
-- **`FCN Condensed.py`** — imports `FCN.py`'s own fetching/classification (not duplicated) and
-  prints just the outcome percentages for every entry in `PRODUCTS` - no audit CSV, no charts, no
-  diagnostics, no synthetic tests. Use this for a quick rerun once you trust `FCN.py`'s numbers.
-- **`FCN XLSX.py`** — a compact, fully self-contained reimplementation (no import from `FCN.py` or
-  anything else in this repo) that writes the same percentages to `FCN Percentages.xlsx` instead of
-  the terminal. Deliberately portable: copy this one file anywhere and run it with nothing but
-  `pip install pandas yfinance openpyxl`. Edit the `TICKERS`/`STRIKE`/... constants at the top of
-  the file directly - it has no `PRODUCTS` list, just one product per run. Use `FCN.py` instead
-  whenever correctness under edge cases (data gaps, basket calendar mismatches) matters more than
-  portability - this script doesn't share, or get exercised by, `FCN.py`'s synthetic test suite.
+Charts and CSVs are ad hoc, run-specific output (like `Estimators/`, not like `Product MtM/`) and
+are gitignored.
+
+**`FCN Python-in-Excel.py`** (same folder) is the body of an Excel `=PY()` cell, fed by a FactSet
+price pull. It applies the same rule as `classify` here and was checked to match it launch by launch.

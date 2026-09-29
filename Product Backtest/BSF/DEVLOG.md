@@ -37,3 +37,11 @@ direction as BRC; (3) raising STRIKE from 1.00 to 1.20 (same Barrier/monitoring)
 ITM (14.0% -> 4.1%) to OTM (39.8% -> 49.6%) while Knocked Out stayed EXACTLY unchanged at 42.235% -
 confirms STRIKE only splits the non-knocked-out pool and has no effect on the knock-out test itself,
 which is the whole point of testing it independently rather than assuming it from the code.
+
+## Standalone Python version added, `BSF.py` (2026-09-29)
+
+Added `BSF.py` alongside (not replacing) `BSF Python-in-Excel.py`: same rule, fetched from yfinance
+instead of a FactSet sheet. It is a ~40-line file of terms + `classify` + `self_test()`, running on the
+shared engine `../_backtest.py` (see `Product Backtest/FCN/DEVLOG.md`, 2026-09-29). Verified by
+running the Excel snippet itself (with `xl()` stubbed to return the same yfinance data) against
+`BSF.py`'s `classify`. Every one of 6,297 PFE launches matched, in both European and American monitoring modes.

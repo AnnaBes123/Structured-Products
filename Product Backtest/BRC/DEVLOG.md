@@ -49,3 +49,11 @@ Verified three ways:
      `diagnostic_stats` "P(finishes below strike at maturity, ignoring autocall)" for AMD at 70%
      (24.487%) to the decimal - the same degenerate-limit-check idea this repo's MATHEMATICS.md
      files use for QuantLib products, applied here to a compact reimplementation instead.
+
+## Standalone Python version added, `BRC.py` (2026-09-29)
+
+Added `BRC.py` alongside (not replacing) `BRC Python-in-Excel.py`: same rule, fetched from yfinance
+instead of a FactSet sheet. It is a ~40-line file of terms + `classify` + `self_test()`, running on the
+shared engine `../_backtest.py` (see `Product Backtest/FCN/DEVLOG.md`, 2026-09-29). Verified by
+running the Excel snippet itself (with `xl()` stubbed to return the same yfinance data) against
+`BRC.py`'s `classify`. Every one of 6,297 PFE launches matched, in both European and American monitoring modes.

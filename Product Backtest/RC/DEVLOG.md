@@ -37,3 +37,11 @@ that first attempt introduced and how they were caught): merged `map_obs`'s bran
 tuple-unpacking. Applied carefully this time (single `xl()` call, correct `.set_index`) and
 re-verified against the same stubbed-AMD test before considering it done - matches exactly
 (61.7%/34.3%/4.0% and completed 64.3%/35.7%).
+
+## Standalone Python version added, `RC.py` (2026-09-29)
+
+Added `RC.py` alongside (not replacing) `RC Python-in-Excel.py`: same rule, fetched from yfinance
+instead of a FactSet sheet. It is a ~40-line file of terms + `classify` + `self_test()`, running on the
+shared engine `../_backtest.py` (see `Product Backtest/FCN/DEVLOG.md`, 2026-09-29). Verified by
+running the Excel snippet itself (with `xl()` stubbed to return the same yfinance data) against
+`RC.py`'s `classify`. Every one of 6,297 PFE launches matched.

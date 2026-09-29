@@ -56,11 +56,11 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, SCRIPT_BASENAME + ".png")
 #     BARRIER is ignored.
 PRODUCT_TYPE = "GENERIC"
 
-STRIKE = 0.5                  # breach level, as a fraction of each name's own entry level -
+STRIKE = 1.05                  # breach level, as a fraction of each name's own entry level -
                                # the put strike (FCN/RC/BRC) or just "the level" (GENERIC)
 BARRIER = None                 # BRC only: down-and-in knock-in level, as a fraction of each
                                # name's own entry level. Must be < STRIKE. Ignored otherwise.
-ENTRY_DATE = "2026-09-17"
+ENTRY_DATE = "2026-09-01"
 TENOR = 1
 
 if PRODUCT_TYPE not in ("FCN", "RC", "BRC", "GENERIC"):
@@ -73,7 +73,7 @@ PRODUCT_LABELS = {"FCN": "Fixed Coupon Note", "RC": "Reverse Convertible",
 
 # 1 ticker = single-asset mode. 2+ = basket (worst-of) mode, same convention
 # as Multi-RC / Multi-FCN. Try TICKERS = ["AAPL", "JPM", "XOM"].
-TICKERS = ["CL=F", "BZ=F"]
+TICKERS = ["NESN.SW"]
 
 N_SIMULATIONS = 10000            # Monte Carlo paths per rolling origin date - a "decent" number
                                  # gives ~1.4% standard error on a 50% probability; see

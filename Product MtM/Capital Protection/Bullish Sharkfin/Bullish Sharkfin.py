@@ -40,11 +40,11 @@ REBATE = 4.0                   # cash paid immediately if the barrier is touched
                                 # term in this repo (STRIKE, BARRIER, etc.); left at 0 by default
 GS_CDS_SPREAD = 0.002675       # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - issuer credit spread, ZCB leg only - tenor-matched to TENOR=1, not the 5y CDS an earlier version of this repo used
 
-ENTRY_DATE = "2025-01-02"
-TENOR = 1
+ENTRY_DATE = "2026-09-01"
+TENOR = 0.078
 RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
 
-TICKER = "MCD"
+TICKER = "NESN.SW"
 SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
                              # is literally "^GSPC"; never used as a stand-in for a
                              # single-name stock's own price

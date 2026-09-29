@@ -225,3 +225,33 @@ elsewhere) are now short, WHY-only one-liners; the long-form rationale that used
 module docstring, function docstrings, and printed runtime caveats moved here and to `README.md`
 (which already carried most of it). Nothing about the backtest's logic changed — this was a
 documentation-location change only.
+
+## Rewritten to ~60 lines on a shared engine (2026-09-29)
+
+`FCN.py` was ~1,000 lines. Asked to condense every product backtest to about 100 lines at most. It is
+now terms + a pure `classify(w, mat, obs_at)` rule + `self_test()`. Fetching, gap-tolerant date
+mapping, the launch loop, the report and the charts moved to `../_backtest.py`, shared with RC/BRC/BSF.
+That is why each product file is short and none of them duplicates the plumbing.
+
+Verified: re-ran the old `FCN.py` on the same AMD data (90%/100%/quarterly/12m) and compared every
+launch. All 6,472 launch dates, outcomes and completed flags match exactly (70.4% / 6.2% / 22.3% /
+1.2% all-launches, 70.4% / 6.4% / 23.2% completed cohort).
+
+Dropped deliberately. Recover any of these from git history (pre-2026-09-29 `FCN.py`) if needed:
+- **`PRODUCTS` list**: one note per run now, terms as constants at the top of the file.
+- **"Observed underlying behavior" diagnostic grid** (realized vol, trigger/strike candidate grid).
+  `RC.py` on the same ticker/strike gives the "finishes below strike, ignoring autocall" rate.
+- **Independent audit-table cross-check** of the AUTOCALL rate, and the per-observation audit columns
+  (`Obs*_Scheduled/Actual/Ratio/Status`). The audit CSV now has one row per launch:
+  `Launch/Outcome/Completed/UnderlyingReturn`.
+- **First-autocall-by-month counts**, average recovery on delivery, and the "avg max return" cohort
+  column (the underlying's terminal return is kept as `AvgUnderlyingRet`).
+- **Term/price input validation** (`validate_terms`, most of `validate_price_df`). A basic
+  empty/duplicate/non-positive check remains in `fetch`. The FRED fallback and the
+  insufficient-history warning were also dropped; the report still prints the actual data start date.
+- **Synthetic test suite** reduced from ~170 lines to ~10 asserts on `classify` directly. Because
+  `classify` is now a pure function of the worst-of array, the tests no longer need constructed date
+  calendars. The holiday-roll and large-gap cases are now covered by `map_obs` returning a position /
+  `None`, rather than tested end-to-end as before.
+- **`FCN Condensed.py`** deleted: it imported names from the old `FCN.py` that no longer exist, and
+  the new `FCN.py` is itself the condensed version.
