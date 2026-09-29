@@ -1,5 +1,5 @@
 """
-Body of ONE Excel =PY() cell: price path chart, with a red line from launch to maturity for every
+Body of ONE Excel =PY() cell: price path chart, with a vertical red line at the launch date of every
 launch that ended badly for the investor. Same "General" sheet and params (A:E prices, G:H params)
 as `General Python-in-Excel.py` - edit the Product/terms there and this chart redraws.
 Bad outcome: FCN/RC/BRC = PHYSICAL_DELIVERY; BSF (principal-protected, no delivery) = PARTICIPATION_OTM.
@@ -8,8 +8,6 @@ Paste everything below the ---8<--- line into the cell; the chart shows as an im
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib.collections import LineCollection
 
 raw = xl("General!G1:H12")
 p = dict(zip(raw.iloc[:, 0].str.strip(), raw.iloc[:, 1]))
@@ -61,19 +59,18 @@ def classify(i):
 
 # single ticker: actual price; basket: worst-of performance vs. first date
 y = px[:, 0] if px.shape[1] == 1 else (px / px[0]).min(axis=1)
-x = mdates.date2num(dates)
 bad, n = [], 0
 for i, d in enumerate(dates):
     if launch_start <= d <= launch_end:
         n += 1
         outcome, j = classify(i)
         if outcome == BAD:
-            bad.append([(x[i], y[i]), (x[j], y[j])])  # launch -> maturity
+            bad.append(dates[i])  # launch date
 
 fig, ax = plt.subplots(figsize=(11, 5))
 ax.plot(dates, y, color="black", lw=0.8)
-ax.add_collection(LineCollection(bad, colors="firebrick", lw=0.6, alpha=0.15))
-ax.plot([], [], color="firebrick", label=f"{BAD}: launch -> maturity ({len(bad)} of {n} launches)")  # solid legend swatch
+ax.vlines(bad, 0, 1, transform=ax.get_xaxis_transform(), colors="firebrick", lw=0.5, alpha=0.15)  # full height
+ax.plot([], [], color="firebrick", label=f"{BAD}: launch date ({len(bad)} of {n} launches)")  # solid legend swatch
 ax.set(title=f"{p['Ticker']} {PRODUCT} - strike {STRIKE:.0%}, tenor {TENOR}m",
        ylabel="Price" if px.shape[1] == 1 else "Worst-of vs. start (x)")
 ax.legend(loc="upper left", frameon=False)
