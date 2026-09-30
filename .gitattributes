@@ -1,0 +1,5 @@
+# Extensionless Python scripts - tell GitHub Linguist so they get syntax
+# highlighting and count toward the repo's language stats.
+Product[[:space:]]MtM/Graphs[[:space:]](Maths)/Autocall[[:space:]]* linguist-language=Python
+Product[[:space:]]MtM/Graphs[[:space:]](Maths)/Evolving[[:space:]]Probability[[:space:]](*D) linguist-language=Python
+Product[[:space:]]MtM/Price[[:space:]]Return[[:space:]]Basic/Price[[:space:]]Return linguist-language=Python

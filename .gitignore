@@ -40,3 +40,10 @@ Thumbs.db
 # committed reference output, while Estimators/*.png and per-product
 # audit CSVs already have their own folder-level .gitignore. See
 # CLAUDE.md "Chart (.png) versioning differs by folder".
+
+# Stray virtualenv created at a literal placeholder path
+path/
+
+# Superseded exploratory scripts - kept locally for history, not published
+# (not maintained, not held to the repo's conventions; see README).
+Redundant (Past)/

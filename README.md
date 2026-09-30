@@ -30,7 +30,7 @@ However, when the product library expanded, specifically that with barrier optio
 
 ## `Redundant (Past)/`
 
-Earlier, superseded exploratory scripts (early FCN attempts before theory became more grounded, a Markov-chain probability model, an old Streamlit app, an old backtest script) kept for history. Not maintained, not held to the same conventions or scrutiny as the two folders above, and not a source of current numbers — skip this folder unless you're specifically curious about earlier iterations and earlier interests before option MtM pricing originated. 
+Earlier, superseded exploratory scripts (early FCN attempts before theory became more grounded, a Markov-chain probability model, an old Streamlit app, an old backtest script) kept locally for history but gitignored, so they are not part of the published repo. Not maintained, not held to the same conventions or scrutiny as the two folders above, and not a source of current numbers — skip this folder unless you're specifically curious about earlier iterations and earlier interests before option MtM pricing originated. 
 
 ## Setup
 
