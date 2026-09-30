@@ -7,7 +7,7 @@ owns the current-state explanation of what the script does — read that first i
 to understand the product/mechanics; come here for the "why isn't it simpler" history.
 
 > Retroactively written 2026-09-21, when the repo adopted "short code comments, long rationale
-> in DEVLOG.md" as its standing convention (see root `CLAUDE.md`). The entries below summarize
+> in DEVLOG.md" as its standing convention. The entries below summarize
 > decisions already present in the code at that point; they aren't in strict chronological order
 > of when each was actually made.
 
@@ -220,7 +220,7 @@ big) price range to confirm both changes together still reproduce the audited nu
 
 ## Terse code / devlog split (2026-09-21)
 
-Repo-wide convention change (see root `CLAUDE.md`): code comments in `FCN.py` (and new/edited files
+Repo-wide convention change: code comments in `FCN.py` (and new/edited files
 elsewhere) are now short, WHY-only one-liners; the long-form rationale that used to live in the
 module docstring, function docstrings, and printed runtime caveats moved here and to `README.md`
 (which already carried most of it). Nothing about the backtest's logic changed — this was a

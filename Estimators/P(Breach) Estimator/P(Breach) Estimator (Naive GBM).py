@@ -62,7 +62,7 @@ def _calendar_to_trading_days(calendar_days):
 
 
 # --- Data fetching (duplicated from P(Breach) Estimator.py rather than imported -
-# every script in this repo is standalone, see CLAUDE.md) ---
+# every script in this repo is standalone) ---
 
 def fetch_daily_closes(ticker, start, end, fred_series=None):
     series = None
