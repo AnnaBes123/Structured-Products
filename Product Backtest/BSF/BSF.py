@@ -20,9 +20,11 @@ BUCKETS = {"PARTICIPATION_ITM": "seagreen", "PARTICIPATION_OTM": "goldenrod",
 
 
 def classify(w, mat, obs_at, american=AMERICAN):
+    if american and (w >= BARRIER).any():
+        return "KNOCKED_OUT"   # final the day it's hit, even if maturity isn't in the data yet
     if mat is None:
         return "OUTSTANDING"
-    if (w[:mat + 1] >= BARRIER).any() if american else w[mat] >= BARRIER:
+    if w[mat] >= BARRIER:
         return "KNOCKED_OUT"
     return "PARTICIPATION_ITM" if w[mat] >= STRIKE else "PARTICIPATION_OTM"
 
@@ -35,7 +37,9 @@ def self_test():
     assert classify(path(1, 0.9, BARRIER), 2, None, american=False) == "KNOCKED_OUT"   # barrier inclusive
     assert classify(path(1, 0.9, STRIKE), 2, None, american=True) == "PARTICIPATION_ITM"  # strike inclusive
     assert classify(path(1, 1.1, 0.8), 2, None, american=True) == "PARTICIPATION_OTM"
-    assert classify(path(1, 2.0), None, None) == "OUTSTANDING"
+    assert classify(path(1, 2.0), None, None, american=False) == "OUTSTANDING"
+    assert classify(path(1, 2.0, 0.9), None, None, american=True) == "KNOCKED_OUT"   # KO before maturity is in the data
+    assert classify(path(1, 1.1), None, None, american=True) == "OUTSTANDING"
 
 
 if __name__ == "__main__":

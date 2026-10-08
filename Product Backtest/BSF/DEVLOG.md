@@ -45,3 +45,27 @@ instead of a FactSet sheet. It is a ~40-line file of terms + `classify` + `self_
 shared engine `../_backtest.py` (see `Product Backtest/FCN/DEVLOG.md`, 2026-09-29). Verified by
 running the Excel snippet itself (with `xl()` stubbed to return the same yfinance data) against
 `BSF.py`'s `classify`. Every one of 6,297 PFE launches matched, in both European and American monitoring modes.
+
+## Knock-out now resolves on the day it's hit (2026-10-07)
+
+Bug: `classify` returned OUTSTANDING for any launch whose maturity date wasn't in the data yet,
+*before* looking at the barrier. Under American monitoring that is wrong - a knock-out is terminal
+the day the barrier is touched (same early-resolution shape as an FCN autocall, which the FCN
+backtest already reports before maturity). A note launched 3 months ago that has already traded
+through the barrier is not "outstanding"; its outcome is known. Fixed in both `BSF.py` and
+`BSF Python-in-Excel.py`: the American barrier test now runs first, over launch -> maturity or, if
+maturity isn't observable, launch -> last data date.
+
+Unchanged on purpose:
+- European monitoring still looks at the maturity day only, so a European launch without a maturity
+  date is still OUTSTANDING (nothing can be known early).
+- `Completed` still means "maturity date is in the data", exactly like an autocalled FCN. So an early
+  knock-out counts in the all-launch mix but not in the completed cohort. Putting early-resolving
+  launches into the completed cohort would bias it toward knock-outs (they resolve sooner than
+  launches that survive), so the completed-cohort percentages are deliberately unaffected.
+
+Verified on PFE (strike 100%, barrier 115%, 12m, 6,303 launches, data to 2026-10-06): American
+all-launch KNOCKED_OUT 42.377% -> 43.519% and OUTSTANDING 3.982% -> 2.840% (72 launches moved);
+completed-cohort figures and every European figure identical before/after. `BSF.py`, the BSF Excel
+cell, both General cells, and a separate plain-loop reimplementation agree on all 6,303 launches in
+both monitoring modes. Three self-test cases added for the early knock-out.

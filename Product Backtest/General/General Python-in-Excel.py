@@ -62,9 +62,12 @@ def classify(i):
         # must fall strictly before maturity's own day - that day belongs to the strike test
         if k is not None and i < k and (j is None or k < j) and (px[k] / s0).min() >= TRIGGER:
             return "AUTOCALL", j is not None
+    live = (px[i:None if j is None else j + 1] / s0).min(axis=1)  # worst-of, launch -> maturity (or as-of)
+    if PRODUCT == "BSF" and AMERICAN and (live >= BARRIER).any():
+        return "KNOCKED_OUT", j is not None  # KO is final the day it's hit, even if maturity isn't in the data yet
     if j is None:
         return "OUTSTANDING", False
-    path = (px[i if AMERICAN else j:j + 1] / s0).min(axis=1)  # worst-of; European = maturity day only
+    path = live if AMERICAN else live[-1:]  # European = maturity day only
     end = path[-1]
     if PRODUCT == "BSF":
         return ("KNOCKED_OUT" if (path >= BARRIER).any() else

@@ -51,11 +51,13 @@ def map_obs(target):
 def classify(i):
     s0 = prices[i]
     j = map_obs(all_dates[i] + pd.DateOffset(months=TENOR_MONTHS))
+    live = (prices[i:None if j is None else j + 1] / s0).min(axis=1)  # worst-of, launch -> maturity (or as-of)
+    if AMERICAN and (live >= BARRIER).any():
+        return "KNOCKED_OUT", j is not None  # final the day it's hit, even if maturity isn't in the data yet
     if j is None:
         return "OUTSTANDING", False
-    worst = (prices[j] / s0).min()
-    touched = ((prices[i:j + 1] / s0).min(axis=1) >= BARRIER).any() if AMERICAN else worst >= BARRIER
-    if touched:
+    worst = live[-1]
+    if worst >= BARRIER:
         return "KNOCKED_OUT", True
     return ("PARTICIPATION_ITM" if worst >= STRIKE else "PARTICIPATION_OTM"), True
 
