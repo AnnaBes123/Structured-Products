@@ -82,3 +82,10 @@ delivery launches exactly for RC and FCN at 3m/6m/12m.
 The real gap was that the last tenor's worth of launches has no outcome at all yet, and the chart
 drew that stretch the same as "nothing bad happened". Those launches are now drawn in grey with
 their own legend entry.
+
+## BRC: BREACHED_RECOVERED bucket (2026-10-12)
+
+Both cells split BRC's MATURITY_CASH into "never breached" and "breached, recovered to >= strike" -
+see `Product Backtest/BRC/DEVLOG.md` (2026-10-12) for the rule, why it is empty under European
+monitoring, and the verification. FCN and RC are unaffected (no barrier). The chart still marks
+PHYSICAL_DELIVERY only for BRC.

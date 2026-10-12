@@ -3,7 +3,9 @@ NOT run via `python3` - body of a single Excel `=PY()` cell (Microsoft 365 "Pyth
 Barrier Reverse Convertible: no autocall, plus a down-and-in barrier on top of RC's terminal test -
 same terminal payoff convention as `Product MtM/Yield/Barrier Reverse Convertible/README.md`:
   - Barrier never touched -> full principal back, REGARDLESS of where the underlying ends up.
+    (bucket: MATURITY_CASH)
   - Barrier touched at some point, finishes >= STRIKE at maturity -> still full principal back.
+    (bucket: BREACHED_RECOVERED - only possible under American monitoring when BARRIER < STRIKE)
   - Barrier touched at some point, finishes < STRIKE at maturity -> physical delivery (loss).
 Two barrier-monitoring modes (param below): European = barrier checked ONLY at the single maturity
 observation; American = checked on every trading day from launch through maturity (a running-min
@@ -51,7 +53,9 @@ def classify(i):
         return "OUTSTANDING", False
     worst = (prices[j] / s0).min()
     touched = ((prices[i:j + 1] / s0).min(axis=1) <= BARRIER).any() if AMERICAN else worst <= BARRIER
-    return ("PHYSICAL_DELIVERY" if touched and worst < STRIKE else "MATURITY_CASH"), True
+    if not touched:
+        return "MATURITY_CASH", True
+    return ("PHYSICAL_DELIVERY" if worst < STRIKE else "BREACHED_RECOVERED"), True  # recovered = cash after all
 
 
 rows = [classify(i) for i, d in enumerate(all_dates) if launch_start <= d <= launch_end]
@@ -68,10 +72,12 @@ result = pd.DataFrame([
               f"tenor {TENOR_MONTHS}m"),
     ("Launches", len(labels)),
     ("Maturity Cash %", fmt_pct("MATURITY_CASH", labels)),
+    ("Breached, Recovered %", fmt_pct("BREACHED_RECOVERED", labels)),
     ("Physical Delivery %", fmt_pct("PHYSICAL_DELIVERY", labels)),
     ("Outstanding %", fmt_pct("OUTSTANDING", labels)),
     ("Completed Launches", len(completed)),
     ("Completed Maturity Cash %", fmt_pct("MATURITY_CASH", completed)),
+    ("Completed Breached, Recovered %", fmt_pct("BREACHED_RECOVERED", completed)),
     ("Completed Physical Delivery %", fmt_pct("PHYSICAL_DELIVERY", completed)),
 ], columns=["Metric", "Value"])
 result

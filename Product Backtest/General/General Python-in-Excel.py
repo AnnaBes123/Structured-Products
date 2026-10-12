@@ -41,7 +41,7 @@ TENOR, FREQ, LOCKOUT, MAX_GAP = (int(num(k)) for k in
 OBS_MONTHS = range(LOCKOUT + FREQ, TENOR, FREQ) if PRODUCT == "FCN" and FREQ else []  # never month 0
 BUCKETS = {"FCN": ["AUTOCALL", "MATURITY_CASH", "PHYSICAL_DELIVERY"],
            "RC": ["MATURITY_CASH", "PHYSICAL_DELIVERY"],
-           "BRC": ["MATURITY_CASH", "PHYSICAL_DELIVERY"],
+           "BRC": ["MATURITY_CASH", "BREACHED_RECOVERED", "PHYSICAL_DELIVERY"],
            "BSF": ["PARTICIPATION_ITM", "PARTICIPATION_OTM", "KNOCKED_OUT"]}[PRODUCT]
 
 MODE = "American" if AMERICAN else "European"
@@ -84,8 +84,11 @@ def classify(i):
     if PRODUCT == "BSF":
         return ("KNOCKED_OUT" if (path >= BARRIER).any() else
                 "PARTICIPATION_ITM" if end >= STRIKE else "PARTICIPATION_OTM"), True
-    delivered = end < STRIKE and (PRODUCT != "BRC" or (path <= BARRIER).any())
-    return ("PHYSICAL_DELIVERY" if delivered else "MATURITY_CASH"), True
+    breached = PRODUCT != "BRC" or (path <= BARRIER).any()  # FCN/RC have no barrier: strike test alone
+    if breached and end < STRIKE:
+        return "PHYSICAL_DELIVERY", True
+    # BRC only: barrier was hit during the life but the note recovered to >= strike, so cash after all
+    return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True
 
 
 rows = [classify(i) for i, d in enumerate(dates) if launch_start <= d <= launch_end]

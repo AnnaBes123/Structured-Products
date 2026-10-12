@@ -64,3 +64,28 @@ The output table now has a `Terms` row under `Product`, worded for this product 
 the General cell's `Terms` row - see `Product Backtest/General/DEVLOG.md`, 2026-10-12). For BRC/BSF
 the monitoring mode moved out of the `Product` row into `Terms`. Wording only: every number in the
 table equals the General cell's for the same terms (checked on PFE, 12m).
+
+## New bucket: BREACHED_RECOVERED (2026-10-12)
+
+MATURITY_CASH used to lump together two different histories that both end in cash: notes that never
+touched the barrier, and notes that touched it during the life and then recovered to finish at/above
+strike. The second group is the interesting one - the knock-in had happened, and only the recovery
+saved the investor from delivery - so it is now its own bucket, in `BRC.py`, `BRC Python-in-Excel.py`
+and both General cells:
+
+- MATURITY_CASH: barrier never touched (wherever the underlying finishes).
+- BREACHED_RECOVERED: barrier touched, finished >= strike -> cash.
+- PHYSICAL_DELIVERY: barrier touched, finished < strike. Unchanged.
+
+It is a pure split of the old MATURITY_CASH: PHYSICAL_DELIVERY and OUTSTANDING do not move. Under
+European monitoring (with barrier < strike) it is empty by construction - the barrier is only tested
+on the maturity day, so "touched" means finishing at/below the barrier, which is below strike, which
+is delivery. The row is still printed there (0.000%) so the table shape doesn't change with the mode.
+The General price chart still marks PHYSICAL_DELIVERY only.
+
+Verified on PFE (strike 100%, barrier 70%, 12m, 6,306 launches, data to 2026-10-09), American:
+MATURITY_CASH 81.716% -> 81.066% + BREACHED_RECOVERED 0.650% (41 launches), PHYSICAL_DELIVERY 14.304%
+before and after; European: 0 launches in the new bucket, everything else identical. `BRC.py`, the BRC
+cell, both General cells and a plain-loop reimplementation agree on every launch in both modes; RC
+and FCN outcomes contain no new bucket. Self-test extended with the recovered / European / never-
+breached-below-strike cases.

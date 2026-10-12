@@ -69,8 +69,11 @@ def classify(i):
         if end >= BARRIER:  # American hits already returned above, so this is the European maturity test
             return "KNOCKED_OUT", j
         return ("PARTICIPATION_ITM" if end >= STRIKE else "PARTICIPATION_OTM"), i
-    delivered = end < STRIKE and (PRODUCT != "BRC" or (path <= BARRIER).any())
-    return ("PHYSICAL_DELIVERY" if delivered else "MATURITY_CASH"), i
+    breached = PRODUCT != "BRC" or (path <= BARRIER).any()  # FCN/RC have no barrier: strike test alone
+    if breached and end < STRIKE:
+        return "PHYSICAL_DELIVERY", i
+    # BRC only: barrier was hit during the life but the note recovered to >= strike, so cash after all
+    return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), i
 
 
 # single ticker: actual price; basket: worst-of performance vs. first date

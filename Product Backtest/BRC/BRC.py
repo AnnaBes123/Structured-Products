@@ -1,6 +1,6 @@
 """Rolling historical backtest of a worst-of Barrier Reverse Convertible: no autocall; delivery only if
 the down-and-in barrier was touched AND maturity finishes below strike (same terminal convention as
-Product MtM's BRC). Standalone-Python companion to `BRC Python-in-Excel.py`. History: DEVLOG.md."""
+Product MtM's BRC). Touched but finished >= strike is its own bucket, BREACHED_RECOVERED (still cash). Standalone-Python companion to `BRC Python-in-Excel.py`. History: DEVLOG.md."""
 import os
 import sys
 
@@ -15,14 +15,17 @@ BARRIER = 0.70               # should be <= STRIKE
 AMERICAN = False             # True: barrier checked every trading day; False: maturity only
 TENOR_MONTHS = 12
 LAUNCH_START, LAUNCH_END, DATA_AS_OF = "2001-09-18", None, None   # None -> latest available
-BUCKETS = {"MATURITY_CASH": "seagreen", "PHYSICAL_DELIVERY": "firebrick", "OUTSTANDING": "lightgrey"}
+BUCKETS = {"MATURITY_CASH": "seagreen", "BREACHED_RECOVERED": "goldenrod", "PHYSICAL_DELIVERY": "firebrick",
+           "OUTSTANDING": "lightgrey"}
 
 
 def classify(w, mat, obs_at, american=AMERICAN):
     if mat is None:
         return "OUTSTANDING"
     touched = (w[:mat + 1] <= BARRIER).any() if american else w[mat] <= BARRIER
-    return "PHYSICAL_DELIVERY" if touched and w[mat] < STRIKE else "MATURITY_CASH"
+    if not touched:
+        return "MATURITY_CASH"
+    return "PHYSICAL_DELIVERY" if w[mat] < STRIKE else "BREACHED_RECOVERED"
 
 
 def self_test():
@@ -31,7 +34,9 @@ def self_test():
     assert classify(dip, 2, None, american=True) == "PHYSICAL_DELIVERY"
     assert classify(dip, 2, None, american=False) == "MATURITY_CASH"          # European ignores the dip
     assert classify(path(1, 1.2, BARRIER), 2, None, american=False) == "PHYSICAL_DELIVERY"   # barrier inclusive
-    assert classify(path(1, BARRIER - 0.1, STRIKE), 2, None, american=True) == "MATURITY_CASH"  # strike inclusive
+    assert classify(path(1, BARRIER - 0.1, STRIKE), 2, None, american=True) == "BREACHED_RECOVERED"  # strike inclusive
+    assert classify(path(1, BARRIER - 0.1, STRIKE), 2, None, american=False) == "MATURITY_CASH"   # European never saw it
+    assert classify(path(1, 0.9, (BARRIER + STRIKE) / 2), 2, None, american=True) == "MATURITY_CASH"  # below strike, never breached
     assert classify(path(1, 0.5), None, None) == "OUTSTANDING"
 
 
