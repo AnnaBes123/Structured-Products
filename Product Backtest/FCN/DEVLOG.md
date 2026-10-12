@@ -255,3 +255,10 @@ Dropped deliberately. Recover any of these from git history (pre-2026-09-29 `FCN
   `None`, rather than tested end-to-end as before.
 - **`FCN Condensed.py`** deleted: it imported names from the old `FCN.py` that no longer exist, and
   the new `FCN.py` is itself the condensed version.
+
+## `Terms` row added to the Python-in-Excel output (2026-10-12)
+
+The output table now has a `Terms` row under `Product`, worded for this product only (same string as
+the General cell's `Terms` row - see `Product Backtest/General/DEVLOG.md`, 2026-10-12). For BRC/BSF
+the monitoring mode moved out of the `Product` row into `Terms`. Wording only: every number in the
+table equals the General cell's for the same terms (checked on PFE, 12m).

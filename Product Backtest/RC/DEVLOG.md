@@ -45,3 +45,10 @@ instead of a FactSet sheet. It is a ~40-line file of terms + `classify` + `self_
 shared engine `../_backtest.py` (see `Product Backtest/FCN/DEVLOG.md`, 2026-09-29). Verified by
 running the Excel snippet itself (with `xl()` stubbed to return the same yfinance data) against
 `RC.py`'s `classify`. Every one of 6,297 PFE launches matched.
+
+## `Terms` row added to the Python-in-Excel output (2026-10-12)
+
+The output table now has a `Terms` row under `Product`, worded for this product only (same string as
+the General cell's `Terms` row - see `Product Backtest/General/DEVLOG.md`, 2026-10-12). For BRC/BSF
+the monitoring mode moved out of the `Product` row into `Terms`. Wording only: every number in the
+table equals the General cell's for the same terms (checked on PFE, 12m).

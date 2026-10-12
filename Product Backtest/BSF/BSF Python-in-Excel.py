@@ -71,7 +71,9 @@ def fmt_pct(bucket, of):
 
 
 result = pd.DataFrame([
-    ("Product", f"{TICKER} Bullish Shark Fin ({'American' if AMERICAN else 'European'})"),
+    ("Product", f"{TICKER} BSF"),
+    ("Terms", f"strike {STRIKE:.0%}, knock-out barrier {BARRIER:.0%} {'American' if AMERICAN else 'European'}, "
+              f"tenor {TENOR_MONTHS}m"),
     ("Launches", len(labels)),
     ("Participation (ITM) %", fmt_pct("PARTICIPATION_ITM", labels)),
     ("Participation (OTM) %", fmt_pct("PARTICIPATION_OTM", labels)),

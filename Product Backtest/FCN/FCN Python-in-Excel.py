@@ -101,6 +101,11 @@ def fmt_pct(bucket, of):
 
 result = pd.DataFrame([
     ("Product", f"{ticker_label} FCN"),
+    ("Terms", f"strike {STRIKE:.0%}"
+              + (f", autocall {AUTOCALL_TRIGGER:.0%} every {AUTOCALL_FREQUENCY_MONTHS}m"
+                 + (f" after {AUTOCALL_LOCKOUT_MONTHS}m lockout" if AUTOCALL_LOCKOUT_MONTHS else "")
+                 if AUTOCALL_FREQUENCY_MONTHS else ", no autocall")
+              + f", tenor {TENOR_MONTHS}m"),
     ("Launches", len(outcomes)),
     ("Autocall %", fmt_pct("AUTOCALL", outcomes)),
     ("Maturity Cash %", fmt_pct("MATURITY_CASH", outcomes)),

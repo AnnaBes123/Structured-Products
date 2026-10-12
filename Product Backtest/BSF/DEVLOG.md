@@ -69,3 +69,10 @@ all-launch KNOCKED_OUT 42.377% -> 43.519% and OUTSTANDING 3.982% -> 2.840% (72 l
 completed-cohort figures and every European figure identical before/after. `BSF.py`, the BSF Excel
 cell, both General cells, and a separate plain-loop reimplementation agree on all 6,303 launches in
 both monitoring modes. Three self-test cases added for the early knock-out.
+
+## `Terms` row added to the Python-in-Excel output (2026-10-12)
+
+The output table now has a `Terms` row under `Product`, worded for this product only (same string as
+the General cell's `Terms` row - see `Product Backtest/General/DEVLOG.md`, 2026-10-12). For BRC/BSF
+the monitoring mode moved out of the `Product` row into `Terms`. Wording only: every number in the
+table equals the General cell's for the same terms (checked on PFE, 12m).

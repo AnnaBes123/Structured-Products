@@ -63,7 +63,9 @@ def fmt_pct(bucket, of):
 
 
 result = pd.DataFrame([
-    ("Product", f"{TICKER} BRC ({'American' if AMERICAN else 'European'})"),
+    ("Product", f"{TICKER} BRC"),
+    ("Terms", f"strike {STRIKE:.0%}, knock-in barrier {BARRIER:.0%} {'American' if AMERICAN else 'European'}, "
+              f"tenor {TENOR_MONTHS}m"),
     ("Launches", len(labels)),
     ("Maturity Cash %", fmt_pct("MATURITY_CASH", labels)),
     ("Physical Delivery %", fmt_pct("PHYSICAL_DELIVERY", labels)),
