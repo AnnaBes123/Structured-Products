@@ -4,7 +4,8 @@ Paste everything below the ---8<--- line into the cell, then Ctrl+Shift+Alt+M (O
 
 Sheet "General":
   A:E  price pull, header row 1: "Date", then one column per ticker (2+ = worst-of; unused columns blank).
-  G:H  params, label in G / value in H (rows 1-12; blank = not used by this product):
+  G:H  params, value in H, rows 1-12 in exactly this order (blank = not used by this product). Only the
+       row order matters - the G labels are yours to word per product (formulas: see DEVLOG.md):
          Ticker                      AMD
          Product                     FCN        (FCN, RC, BRC or BSF)
          Strike                      0.90
@@ -22,7 +23,10 @@ Sheet "General":
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 
 raw = xl("General!G1:H12")
-p = dict(zip(raw.iloc[:, 0].str.strip(), raw.iloc[:, 1]))
+# read by row, not by label, so the G labels are free to change wording with the product
+p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
+              "Autocall Frequency Months", "Autocall Lockout Months", "Tenor Months", "Launch Start",
+              "Launch End", "Max Gap Days"], raw.iloc[:, 1]))
 
 
 def num(label):
@@ -39,6 +43,14 @@ BUCKETS = {"FCN": ["AUTOCALL", "MATURITY_CASH", "PHYSICAL_DELIVERY"],
            "RC": ["MATURITY_CASH", "PHYSICAL_DELIVERY"],
            "BRC": ["MATURITY_CASH", "PHYSICAL_DELIVERY"],
            "BSF": ["PARTICIPATION_ITM", "PARTICIPATION_OTM", "KNOCKED_OUT"]}[PRODUCT]
+
+MODE = "American" if AMERICAN else "European"
+TERMS = f"strike {STRIKE:.0%}" + {
+    "FCN": f", autocall {TRIGGER:.0%} every {FREQ}m" + (f" after {LOCKOUT}m lockout" if LOCKOUT else "")
+           if FREQ else ", no autocall",
+    "RC": "",
+    "BRC": f", knock-in barrier {BARRIER:.0%} {MODE}",
+    "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m"
 
 prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dropna()  # oversized on purpose
 prices_df = prices_df.set_index(prices_df.columns[0]).sort_index()
@@ -84,8 +96,7 @@ def pct(bucket, of):
     return f"{of.count(bucket) / len(of):.3%}" if of else "n/a"
 
 
-mode = f" ({'American' if AMERICAN else 'European'})" if PRODUCT in ("BRC", "BSF") else ""
-pd.DataFrame([("Product", f"{p['Ticker']} {PRODUCT}{mode}"), ("Launches", len(every))]
+pd.DataFrame([("Product", f"{p['Ticker']} {PRODUCT}"), ("Terms", TERMS), ("Launches", len(every))]
              + [(f"{b} %", pct(b, every)) for b in BUCKETS + ["OUTSTANDING"]]
              + [("Completed Launches", len(completed))]
              + [(f"Completed {b} %", pct(b, completed)) for b in BUCKETS],

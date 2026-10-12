@@ -37,3 +37,48 @@ modes; the chart cell's outcomes still equal the table cell's for FCN, RC, BRC a
 
 European monitoring still only tests the maturity day - set `Barrier Monitoring` to American for
 the path to be observed.
+
+## Wording follows the product; params read by row, not by label (2026-10-12)
+
+Problem: the `General` sheet's G labels are fixed text, so with Product = RC, BRC or BSF the sheet
+still showed "Autocall Trigger / Autocall Frequency Months / Autocall Lockout Months" - reading as if
+those products autocall. They don't: only FCN has an autocall, and the code has always ignored those
+three rows for anything else (`OBS_MONTHS` is empty unless Product is FCN). The wording was wrong,
+not the numbers.
+
+Two changes, both cells:
+
+1. Params are read by **row position** in `G1:H12` rather than by matching the G label. The labels
+   are now free text, so they can be formulas that reword themselves per product. Trade-off: the 12
+   rows must stay in the documented order - inserting or reordering a row now silently misreads
+   values instead of raising a KeyError. Rejected alternative: keep label matching and accept a list
+   of aliases per row - more code, and every new wording would need a code edit.
+2. The table gets a `Terms` row and the chart title uses the same string, built per product: FCN
+   shows the autocall, RC shows strike only, BRC says "knock-in barrier", BSF says "knock-out
+   barrier" (both with the monitoring mode). Nothing about autocall appears unless Product is FCN.
+
+Label formulas for the sheet (paste into column G; `H2` is the Product cell):
+
+    G4  =SWITCH(UPPER(TRIM($H$2)),"BRC","Knock-In Barrier","BSF","Knock-Out Barrier","Barrier (not used)")
+    G5  =IF(OR(UPPER(TRIM($H$2))={"BRC","BSF"}),"Barrier Monitoring","Barrier Monitoring (not used)")
+    G6  =IF(UPPER(TRIM($H$2))="FCN","Autocall Trigger","(not used - no autocall)")
+    G7  =IF(UPPER(TRIM($H$2))="FCN","Autocall Frequency Months","(not used - no autocall)")
+    G8  =IF(UPPER(TRIM($H$2))="FCN","Autocall Lockout Months","(not used - no autocall)")
+
+Verified: ran both cells for FCN, RC, BRC and BSF with every G label replaced by junk text - same
+outcomes as before, and the Terms row / chart title match the product in each case.
+
+## Chart: outstanding launches shaded grey (2026-10-12)
+
+Prompted by an AAPL 95%-strike, 12m chart showing no PHYSICAL_DELIVERY lines from 2025 on, which
+looked like a bug next to the April 2025 sell-off (close down to ~172). It isn't one: the strike is
+tested on the maturity day only, lines sit at the *launch* date, and every 12m note launched in
+2025 Q1-Q3 matured (or will mature) with AAPL back above 95% of its launch level - e.g. Q1 2025
+launches were struck at closes of 210-247 and matured in Q1 2026 at 247-278. The dip in between is
+ignored by a maturity-only test. Shorter tenors do show it: the same terms give 90 delivery launches
+dated 2025+ at 3m and 26 at 6m, versus 0 at 12m. Chart lines equal a plain-loop reimplementation's
+delivery launches exactly for RC and FCN at 3m/6m/12m.
+
+The real gap was that the last tenor's worth of launches has no outcome at all yet, and the chart
+drew that stretch the same as "nothing bad happened". Those launches are now drawn in grey with
+their own legend entry.

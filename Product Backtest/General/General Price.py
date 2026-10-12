@@ -10,7 +10,10 @@ Paste everything below the ---8<--- line into the cell; the chart shows as an im
 import matplotlib.pyplot as plt
 
 raw = xl("General!G1:H12")
-p = dict(zip(raw.iloc[:, 0].str.strip(), raw.iloc[:, 1]))
+# read by row, not by label, so the G labels are free to change wording with the product
+p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
+              "Autocall Frequency Months", "Autocall Lockout Months", "Tenor Months", "Launch Start",
+              "Launch End", "Max Gap Days"], raw.iloc[:, 1]))
 
 
 def num(label):
@@ -25,6 +28,14 @@ TENOR, FREQ, LOCKOUT, MAX_GAP = (int(num(k)) for k in
 OBS_MONTHS = range(LOCKOUT + FREQ, TENOR, FREQ) if PRODUCT == "FCN" and FREQ else []  # never month 0
 BAD = {"FCN": "PHYSICAL_DELIVERY", "RC": "PHYSICAL_DELIVERY", "BRC": "PHYSICAL_DELIVERY",
        "BSF": "KNOCKED_OUT"}[PRODUCT]
+
+MODE = "American" if AMERICAN else "European"
+TERMS = f"strike {STRIKE:.0%}" + {
+    "FCN": f", autocall {TRIGGER:.0%} every {FREQ}m" + (f" after {LOCKOUT}m lockout" if LOCKOUT else "")
+           if FREQ else ", no autocall",
+    "RC": "",
+    "BRC": f", knock-in barrier {BARRIER:.0%} {MODE}",
+    "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m"
 
 prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dropna()
 prices_df = prices_df.set_index(prices_df.columns[0]).sort_index()
@@ -64,25 +75,29 @@ def classify(i):
 
 # single ticker: actual price; basket: worst-of performance vs. first date
 y = px[:, 0] if px.shape[1] == 1 else (px / px[0]).min(axis=1)
-bad, n = [], 0
+bad, pending, n = [], [], 0
 for i, d in enumerate(dates):
     if launch_start <= d <= launch_end:
         n += 1
         outcome, k = classify(i)
         if outcome == BAD:
             bad.append(dates[k])
+        elif outcome == "OUTSTANDING":
+            pending.append(dates[i])
 days = sorted(set(bad))  # many launches knock out on the same day - draw each day once
 when = "knock-out date" if PRODUCT == "BSF" else "launch date"
 
 fig, ax = plt.subplots(figsize=(11, 5))
 ax.plot(dates, y, color="black", lw=0.8)
+# grey = launches with no outcome yet, so "no red here" isn't misread as "no bad outcomes here"
+ax.vlines(pending, 0, 1, transform=ax.get_xaxis_transform(), colors="grey", lw=0.5, alpha=0.15)
 ax.vlines(days, 0, 1, transform=ax.get_xaxis_transform(), colors="firebrick", lw=0.5,
           alpha=0.5 if PRODUCT == "BSF" else 0.15)  # full height; BSF days are de-duplicated, so less overlap
 ax.plot([], [], color="firebrick", label=f"{BAD}: {when} ({len(bad)} of {n} launches"
                                              + (f", {len(days)} days)" if PRODUCT == "BSF" else ")"))  # solid legend swatch
-barrier = (f", barrier {BARRIER:.0%} {'American' if AMERICAN else 'European'}"
-           if PRODUCT in ("BRC", "BSF") else "")
-ax.set(title=f"{p['Ticker']} {PRODUCT} - strike {STRIKE:.0%}{barrier}, tenor {TENOR}m",
+if pending:
+    ax.plot([], [], color="lightgrey", label=f"OUTSTANDING: launch date, maturity not reached yet ({len(pending)})")
+ax.set(title=f"{p['Ticker']} {PRODUCT} - {TERMS}",
        ylabel="Price" if px.shape[1] == 1 else "Worst-of vs. start (x)")
 ax.legend(loc="upper left", frameon=False)
 ax.spines[["top", "right"]].set_visible(False)
