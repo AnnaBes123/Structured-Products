@@ -129,3 +129,29 @@ Label formulas, replacing the 2026-10-12 ones for rows 7-8:
 
     G7  =IF(UPPER(TRIM($H$2))="FCN","Autocall Frequency","(not used - no autocall)")
     G8  =IF(UPPER(TRIM($H$2))="FCN","Autocall Delay to First Observation (Months)","(not used - no autocall)")
+
+## Multiple underlyings, Settlement row, BSF bucket names (2026-10-14)
+
+- **Worst-of baskets.** Already worked (2+ price columns in A:E, up to 4 tickers; every test uses the
+  worst performer vs. its own launch level). New: the `Product` row and chart title say
+  "AAPL/MSFT/NVDA worst-of", taken from the price headers when the `Ticker` cell is blank (the
+  `Ticker` cell is now display-only).
+- **Settlement (new row 13): Physical / Cash, blank = Physical.** Renames the FCN/RC/BRC loss bucket
+  to PHYSICAL_DELIVERY or CASH_SETTLEMENT. It changes no outcome: below strike the investor gets the
+  worst performer's shares or their value in cash, which are worth the same on the day. Both cells
+  now read `G1:H13`; a sheet that still stops at row 12 reads as Physical.
+- **Loss-case rows in the table** (only when there are losses):
+  - avg and worst value received, % of notional = worst performer's maturity level / strike (e.g.
+    strike 80%, worst finishes at 60% -> 75% of notional). Excludes coupons, so it is not the note's
+    total return.
+  - basket only: which underlying was the worst performer the loss was settled on, % of loss cases.
+- BSF buckets renamed to UPSIDE_PAID / NO_UPSIDE_BELOW_STRIKE - see `Product Backtest/BSF/DEVLOG.md`.
+
+Verified: for FCN, RC, BRC, BSF (American and European), on AAPL and on AAPL/MSFT/NVDA, both
+settlement settings: every launch's outcome and every chart line equal the previous version's after
+renaming. Loss-case stats equal a plain-loop reimplementation (basket RC, strike 80%, 12m: 436 losses,
+avg 83.3%, worst 56.2%, settled on AAPL 18.8% / MSFT 7.1% / NVDA 74.1%).
+
+Label formula for the new row (optional):
+
+    G13 =IF(UPPER(TRIM($H$2))="BSF","(not used - no loss case)","Settlement")

@@ -33,18 +33,18 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 
 # --- Product terms ---
 STRIKE = 1.00                  # long call strike, as a fraction of S0 (100% - at the money)
-BARRIER = 1.10                 # up-and-out barrier (H) for the embedded call, H > STRIKE
-REBATE = 4.0                   # cash paid immediately if the barrier is touched, in underlying
+BARRIER = 1.30                 # up-and-out barrier (H) for the embedded call, H > STRIKE
+REBATE = 4.5                   # cash paid immediately if the barrier is touched, in underlying
                                 # currency (not a fraction of S0) - not economically important for
                                 # MtM purposes here, so set by hand like every other manually-set
                                 # term in this repo (STRIKE, BARRIER, etc.); left at 0 by default
 GS_CDS_SPREAD = 0.002675       # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - issuer credit spread, ZCB leg only - tenor-matched to TENOR=1, not the 5y CDS an earlier version of this repo used
 
-ENTRY_DATE = "2026-09-01"
-TENOR = 0.078
+ENTRY_DATE = "2025-02-01"
+TENOR = 1
 RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; used for BOTH the ZCB leg and the option leg
 
-TICKER = "NESN.SW"
+TICKER = "AAPL"
 SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
                              # is literally "^GSPC"; never used as a stand-in for a
                              # single-name stock's own price

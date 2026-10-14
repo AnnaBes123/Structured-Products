@@ -15,7 +15,7 @@ BARRIER = 1.15
 AMERICAN = False             # True: barrier checked every trading day; False: maturity only
 TENOR_MONTHS = 12
 LAUNCH_START, LAUNCH_END, DATA_AS_OF = "2001-09-18", None, None   # None -> latest available
-BUCKETS = {"PARTICIPATION_ITM": "seagreen", "PARTICIPATION_OTM": "goldenrod",
+BUCKETS = {"UPSIDE_PAID": "seagreen", "NO_UPSIDE_BELOW_STRIKE": "goldenrod",
            "KNOCKED_OUT": "firebrick", "OUTSTANDING": "lightgrey"}
 
 
@@ -26,17 +26,17 @@ def classify(w, mat, obs_at, american=AMERICAN):
         return "OUTSTANDING"
     if w[mat] >= BARRIER:
         return "KNOCKED_OUT"
-    return "PARTICIPATION_ITM" if w[mat] >= STRIKE else "PARTICIPATION_OTM"
+    return "UPSIDE_PAID" if w[mat] >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"
 
 
 def self_test():
     path = lambda *pts: np.array(pts, dtype=float)
     spike = path(1, BARRIER + 0.05, STRIKE + 0.01)   # knocked mid-life, ends just above strike
     assert classify(spike, 2, None, american=True) == "KNOCKED_OUT"
-    assert classify(spike, 2, None, american=False) == "PARTICIPATION_ITM"    # European ignores the spike
+    assert classify(spike, 2, None, american=False) == "UPSIDE_PAID"    # European ignores the spike
     assert classify(path(1, 0.9, BARRIER), 2, None, american=False) == "KNOCKED_OUT"   # barrier inclusive
-    assert classify(path(1, 0.9, STRIKE), 2, None, american=True) == "PARTICIPATION_ITM"  # strike inclusive
-    assert classify(path(1, 1.1, 0.8), 2, None, american=True) == "PARTICIPATION_OTM"
+    assert classify(path(1, 0.9, STRIKE), 2, None, american=True) == "UPSIDE_PAID"  # strike inclusive
+    assert classify(path(1, 1.1, 0.8), 2, None, american=True) == "NO_UPSIDE_BELOW_STRIKE"
     assert classify(path(1, 2.0), None, None, american=False) == "OUTSTANDING"
     assert classify(path(1, 2.0, 0.9), None, None, american=True) == "KNOCKED_OUT"   # KO before maturity is in the data
     assert classify(path(1, 1.1), None, None, american=True) == "OUTSTANDING"

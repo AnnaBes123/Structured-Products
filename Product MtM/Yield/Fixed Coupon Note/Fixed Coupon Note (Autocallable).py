@@ -34,17 +34,17 @@ OUTPUT_PNG = os.path.join(SCRIPT_DIR, os.path.splitext(os.path.basename(__file__
 
 # --- Product terms (same base terms as the plain "Fixed Coupon Note.py",
 # plus the autocall feature) ---
-STRIKE = 0.9                 # short put strike, as a fraction of S0
+STRIKE = 0.65                 # short put strike, as a fraction of S0
 GS_CDS_SPREAD = 0.002675      # Goldman Sachs 1y CDS, 26.75 bps (Investing.com) - issuer credit spread, principal leg only - tenor-matched to TENOR=1, not the 5y CDS an earlier version of this repo used
 
 TRIGGER = 1.00                # autocall level, as a fraction of S0 (100%)
 OBS_PER_YEAR = 4              # quarterly observation dates
 
-ENTRY_DATE = "2025-01-01"
-TENOR = 1
+ENTRY_DATE = "2026-05-23"
+TENOR = 0.3781
 RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical; option leg pricing and MC risk-neutral drift
 
-TICKER = "PFE"
+TICKER = "EWY"
 SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
                              # is literally "^GSPC"; never used as a stand-in for a
                              # single-name stock's own price

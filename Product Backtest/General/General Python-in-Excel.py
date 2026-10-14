@@ -3,10 +3,12 @@ Body of ONE Excel =PY() cell: rolling backtest of any covered product (FCN / RC 
 Paste everything below the ---8<--- line into the cell, then Ctrl+Shift+Alt+M (Output As > Excel Value).
 
 Sheet "General":
-  A:E  price pull, header row 1: "Date", then one column per ticker (2+ = worst-of; unused columns blank).
-  G:H  params, value in H, rows 1-12 in exactly this order (blank = not used by this product). Only the
+  A:E  price pull, header row 1: "Date", then one column per ticker - up to 4 (unused columns blank).
+       2+ tickers = worst-of: every test (autocall, barrier, strike) looks at the worst performer vs. its
+       own launch level, and a loss is settled on that worst performer.
+  G:H  params, value in H, rows 1-13 in exactly this order (blank = not used by this product). Only the
        row order matters - the G labels are yours to word per product (formulas: see DEVLOG.md):
-         Ticker                      AMD
+         Ticker                      AMD          (display name only; blank -> the price headers, e.g. AAPL/MSFT)
          Product                     FCN          (FCN, RC, BRC or BSF)
          Strike                      90%          (% of launch level; all three levels: enter as a
          Barrier                     70%           percentage - 130%, not 1.3. BRC: down-and-in; BSF: up-and-out)
@@ -21,19 +23,21 @@ Sheet "General":
          Launch Start                2001-01-02
          Launch End                  (blank -> last price date)
          Max Gap Days                10
+         Settlement                  Physical     (or Cash; blank = Physical. FCN/RC/BRC loss case only)
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 
-raw = xl("General!G1:H12")
+raw = xl("General!G1:H13")
 # read by row, not by label, so the G labels are free to change wording with the product
 p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
               "Autocall Frequency", "Autocall Delay", "Tenor Months", "Launch Start",
-              "Launch End", "Max Gap Days"], raw.iloc[:, 1]))
+              "Launch End", "Max Gap Days", "Settlement"], raw.iloc[:, 1]))
 
 
 def text(label):
-    return "" if pd.isna(p[label]) else str(p[label]).strip().upper()
+    v = p.get(label)  # .get: a sheet without the newer rows (e.g. Settlement) still works
+    return "" if v is None or pd.isna(v) else str(v).strip().upper()
 
 
 def level(label):
@@ -63,14 +67,16 @@ def frequency(label):
 PRODUCT = text("Product")
 STRIKE, BARRIER, TRIGGER = level("Strike"), level("Barrier"), level("Autocall Trigger")
 AMERICAN = text("Barrier Monitoring").startswith("A")
+# below-strike loss (FCN/RC/BRC) is settled on the worst performer: its shares, or their value in cash
+LOSS = "CASH_SETTLEMENT" if text("Settlement").startswith("C") else "PHYSICAL_DELIVERY"
 TENOR, DELAY, MAX_GAP = months("Tenor Months"), months("Autocall Delay"), months("Max Gap Days")
 FREQ = frequency("Autocall Frequency") if PRODUCT == "FCN" else None
 # first observation = delay + one period, so never the launch day itself
 OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if FREQ else []
-BUCKETS = {"FCN": ["AUTOCALL", "MATURITY_CASH", "PHYSICAL_DELIVERY"],
-           "RC": ["MATURITY_CASH", "PHYSICAL_DELIVERY"],
-           "BRC": ["MATURITY_CASH", "BREACHED_RECOVERED", "PHYSICAL_DELIVERY"],
-           "BSF": ["PARTICIPATION_ITM", "PARTICIPATION_OTM", "KNOCKED_OUT"]}[PRODUCT]
+BUCKETS = {"FCN": ["AUTOCALL", "MATURITY_CASH", LOSS],
+           "RC": ["MATURITY_CASH", LOSS],
+           "BRC": ["MATURITY_CASH", "BREACHED_RECOVERED", LOSS],
+           "BSF": ["UPSIDE_PAID", "NO_UPSIDE_BELOW_STRIKE", "KNOCKED_OUT"]}[PRODUCT]
 
 MODE = "American" if AMERICAN else "European"
 FREQ_NAME = {0: "daily", 1: "monthly", 2: "bi-monthly", 3: "quarterly", 6: "semi-annually"}.get(FREQ, f"every {FREQ}m")
@@ -79,11 +85,15 @@ TERMS = f"strike {STRIKE:.0%}" + {
            f", autocall {TRIGGER:.0%} {FREQ_NAME}" + (f" after {DELAY}m delay" if DELAY else ""),
     "RC": "",
     "BRC": f", knock-in barrier {BARRIER:.0%} {MODE}",
-    "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m"
+    "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m" + (
+    "" if PRODUCT == "BSF" else ", cash-settled" if LOSS == "CASH_SETTLEMENT" else ", physically settled")
 
 prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dropna()  # oversized on purpose
 prices_df = prices_df.set_index(prices_df.columns[0]).sort_index()
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
+NAMES = [str(c).strip() for c in prices_df.columns]
+# 2+ price columns = worst-of basket: every test uses the worst performer vs. its own launch level
+UNDERLYING = (text("Ticker") or "/".join(NAMES)) + (" worst-of" if len(NAMES) > 1 else "")
 launch_start = pd.Timestamp(p["Launch Start"])
 launch_end = dates[-1] if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
 
@@ -108,38 +118,50 @@ def autocalled(i, j):
 
 
 def classify(i):
-    """(outcome, completed) for the note launched on trading day i."""
+    """(outcome, completed, each underlying's level vs. launch on the maturity day - loss cases only)."""
     s0 = px[i]
     j = map_obs(dates[i] + pd.DateOffset(months=TENOR))
     if FREQ is not None and autocalled(i, j):
-        return "AUTOCALL", j is not None
+        return "AUTOCALL", j is not None, None
     live = (px[i:None if j is None else j + 1] / s0).min(axis=1)  # worst-of, launch -> maturity (or as-of)
     if PRODUCT == "BSF" and AMERICAN and (live >= BARRIER).any():
-        return "KNOCKED_OUT", j is not None  # KO is final the day it's hit, even if maturity isn't in the data yet
+        return "KNOCKED_OUT", j is not None, None  # KO is final the day it's hit, even if maturity isn't in the data yet
     if j is None:
-        return "OUTSTANDING", False
+        return "OUTSTANDING", False, None
     path = live if AMERICAN else live[-1:]  # European = maturity day only
     end = path[-1]
     if PRODUCT == "BSF":
         return ("KNOCKED_OUT" if (path >= BARRIER).any() else
-                "PARTICIPATION_ITM" if end >= STRIKE else "PARTICIPATION_OTM"), True
+                "UPSIDE_PAID" if end >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), True, None
     breached = PRODUCT != "BRC" or (path <= BARRIER).any()  # FCN/RC have no barrier: strike test alone
     if breached and end < STRIKE:
-        return "PHYSICAL_DELIVERY", True
+        return LOSS, True, px[j] / s0
     # BRC only: barrier was hit during the life but the note recovered to >= strike, so cash after all
-    return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True
+    return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True, None
 
 
 rows = [classify(i) for i, d in enumerate(dates) if launch_start <= d <= launch_end]
-every, completed = [o for o, c in rows], [o for o, c in rows if c]
+every, completed = [o for o, c, _ in rows], [o for o, c, _ in rows if c]
+losses = np.array([perf for o, c, perf in rows if o == LOSS])  # one row per loss launch, one column per underlying
 
 
 def pct(bucket, of):
     return f"{of.count(bucket) / len(of):.3%}" if of else "n/a"
 
 
-pd.DataFrame([("Product", f"{p['Ticker']} {PRODUCT}"), ("Terms", TERMS), ("Launches", len(every))]
+settle = []
+if len(losses):
+    worst = losses.min(axis=1)
+    # value received per 100% notional, coupons excluded: worst performer's shares (or that much cash)
+    settle.append((f"{LOSS}: avg value received (% of notional)", f"{(worst / STRIKE).mean():.1%}"))
+    settle.append((f"{LOSS}: worst case (% of notional)", f"{(worst / STRIKE).min():.1%}"))
+    if len(NAMES) > 1:
+        who = losses.argmin(axis=1)
+        settle += [(f"{LOSS}: settled on {n} (% of losses)", f"{(who == k).mean():.1%}") for k, n in enumerate(NAMES)]
+
+pd.DataFrame([("Product", f"{UNDERLYING} {PRODUCT}"), ("Terms", TERMS), ("Launches", len(every))]
              + [(f"{b} %", pct(b, every)) for b in BUCKETS + ["OUTSTANDING"]]
              + [("Completed Launches", len(completed))]
-             + [(f"Completed {b} %", pct(b, completed)) for b in BUCKETS],
+             + [(f"Completed {b} %", pct(b, completed)) for b in BUCKETS]
+             + settle,
              columns=["Metric", "Value"])

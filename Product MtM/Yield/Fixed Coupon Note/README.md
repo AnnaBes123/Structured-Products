@@ -198,7 +198,63 @@ script, so you don't have to edit the script to check a different note you hold:
 
 Remember this script only handles a **completed historical window** (it errors if
 `ENTRY_DATE`/`TENOR` extend past today), so this is for checking notes that have already reached
-maturity, not for marking a still-live position.
+maturity, not for marking a still-live position - for that, see "Marking a live FCN" below.
+
+## Marking a live FCN
+
+`FCN MtM Checker.py` gives an **indicative model mark** of an autocallable FCN that is still
+running. Unlike the two scripts above it does not derive anything from `ENTRY_DATE`/`TENOR`: the
+term sheet's own dates are typed in directly, and the path is only fetched up to today.
+
+Don't get a live mark by shortening `TENOR` in `Fixed Coupon Note (Autocallable).py` until the
+window ends today - that makes the script treat today as maturity, spreads the observation dates
+evenly over the shortened tenor (so they no longer match the term sheet), and takes the initial
+fixing from whatever the close was on `ENTRY_DATE`.
+
+Inputs at the top of the script:
+
+- `TICKER`, `STRIKE`, `TRIGGER` - as elsewhere, fractions of the initial fixing.
+- `TRADE_DATE` - where the chart starts.
+- `INITIAL_FIXING` - the term sheet's fixing level. Pin it: the fixing is often struck on a
+  different day (or at a different price) than the trade date's close. `None` falls back to the
+  last close on or before `TRADE_DATE`.
+- `AUTOCALL_OBS_DATES` - the actual autocall observation dates. The final fixing is **not** in
+  this list (no autocall check happens there, same as in the completed-window script).
+- `FINAL_FIXING_DATE` - when the put is fixed. Redemption is usually a few days later; that gap
+  is ignored.
+- `ISSUER_CDS_SPREAD` - set to the actual issuer's spread; the default is the Goldman Sachs 1y
+  CDS used elsewhere in this folder.
+- `VALUATION_DATE` - `None` marks at the latest available close.
+- `IMPLIED_VOL_OVERRIDE` - `None` uses trailing realized vol. Set it (e.g. `0.55`) to mark the
+  valuation date at a quoted implied vol instead, or to try a what-if vol level. It only replaces
+  the vol on the valuation date; the earlier points on the chart keep their realized vol, so the
+  line can step on its last day.
+
+What it does:
+
+1. Checks each observation date that has already passed against the trigger (close on that date,
+   or the next trading day if it wasn't one). If one was hit, the note is reported as autocalled
+   and there is nothing left to mark.
+2. Otherwise values the note on every trading day since the trade date with the same Monte Carlo
+   engine as `Fixed Coupon Note (Autocallable).py` (imported, not copied), using the **real**
+   time left to the final fixing and only the observation dates still ahead on that day.
+3. Prints today's mark: spot vs. fixing, distance to trigger and strike, model value vs. par,
+   delta and vega, and - while an observation is still ahead - the risk-neutral probability of
+   being called at it (a pricing-measure number, not a forecast; see `Estimators/` for
+   real-world probabilities).
+4. Once no autocall observation remains, the note is exactly `ZCB - (1/strike) * put`, so the
+   Monte Carlo mark is checked against that closed form (QuantLib put) and reports PASS/FAIL.
+
+Inputs differ from the completed-window scripts in one way: volatility and the 1Y Treasury rate
+are **re-read on each valuation date** (trailing 2y realized vol up to that day, that day's
+DGS1 print) rather than frozen at entry, because a mark today should use today's inputs.
+
+How far to trust the number: it is the redemption component only (**no coupons**, so it sits a
+little below par even when the note is comfortably safe - that discount is just the remaining
+time value of money and credit spread on the principal), and the vol input is trailing realized
+vol, not an implied vol or skew a dealer would use for a 65%-strike put. It will not match the
+issuer's indicative bid, which also includes accrued coupon, their own funding curve and a
+bid/offer spread. Use it to see direction and rough size, not as a tradable price.
 
 ## Usage
 
@@ -208,6 +264,7 @@ python3 "Fixed Coupon Note.py"
 python3 "Greek Sensitivity.py"
 python3 "Fixed Coupon Note (Autocallable).py"
 python3 "Greek Sensitivity (Autocallable).py"
+python3 "FCN MtM Checker.py"
 ```
 
 Data comes from `yfinance` (Yahoo Finance), falling back to FRED for the S&P 500 and VIX

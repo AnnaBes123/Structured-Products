@@ -39,7 +39,7 @@ ENTRY_DATE = "2025-01-02"
 TENOR = 1
 RISK_FREE_RATE = fetch_risk_free_rate(ENTRY_DATE)  # 1Y Treasury CMT (FRED DGS1) as of ENTRY_DATE - real, historical
 
-TICKER = "RACE"  # drives dividend handling automatically - see fetch_dividend_yield
+TICKER = "MCD"  # drives dividend handling automatically - see fetch_dividend_yield
 SPX_FRED_SERIES = "SP500"    # FRED fallback if yfinance fails - valid ONLY when TICKER
                              # is literally "^GSPC"; never used as a stand-in for a
                              # single-name stock's own price

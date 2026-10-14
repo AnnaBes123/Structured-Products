@@ -2,22 +2,23 @@
 Body of ONE Excel =PY() cell: price path chart, with a vertical red line for every launch that hit the
 product's marked outcome - at its launch date, except BSF, drawn at the date the knock-out occurred. Same "General" sheet and params (A:E prices, G:H params)
 as `General Python-in-Excel.py` - edit the Product/terms there and this chart redraws.
-Marked outcome: FCN/RC/BRC = PHYSICAL_DELIVERY; BSF (principal-protected, no delivery) = KNOCKED_OUT.
+Marked outcome: FCN/RC/BRC = PHYSICAL_DELIVERY or CASH_SETTLEMENT (per Settlement); BSF (principal-protected, no delivery) = KNOCKED_OUT.
 Paste everything below the ---8<--- line into the cell; the chart shows as an image.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 import matplotlib.pyplot as plt
 
-raw = xl("General!G1:H12")
+raw = xl("General!G1:H13")
 # read by row, not by label, so the G labels are free to change wording with the product
 p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
               "Autocall Frequency", "Autocall Delay", "Tenor Months", "Launch Start",
-              "Launch End", "Max Gap Days"], raw.iloc[:, 1]))
+              "Launch End", "Max Gap Days", "Settlement"], raw.iloc[:, 1]))
 
 
 def text(label):
-    return "" if pd.isna(p[label]) else str(p[label]).strip().upper()
+    v = p.get(label)  # .get: a sheet without the newer rows (e.g. Settlement) still works
+    return "" if v is None or pd.isna(v) else str(v).strip().upper()
 
 
 def level(label):
@@ -47,12 +48,13 @@ def frequency(label):
 PRODUCT = text("Product")
 STRIKE, BARRIER, TRIGGER = level("Strike"), level("Barrier"), level("Autocall Trigger")
 AMERICAN = text("Barrier Monitoring").startswith("A")
+# below-strike loss (FCN/RC/BRC) is settled on the worst performer: its shares, or their value in cash
+LOSS = "CASH_SETTLEMENT" if text("Settlement").startswith("C") else "PHYSICAL_DELIVERY"
 TENOR, DELAY, MAX_GAP = months("Tenor Months"), months("Autocall Delay"), months("Max Gap Days")
 FREQ = frequency("Autocall Frequency") if PRODUCT == "FCN" else None
 # first observation = delay + one period, so never the launch day itself
 OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if FREQ else []
-BAD = {"FCN": "PHYSICAL_DELIVERY", "RC": "PHYSICAL_DELIVERY", "BRC": "PHYSICAL_DELIVERY",
-       "BSF": "KNOCKED_OUT"}[PRODUCT]
+BAD = "KNOCKED_OUT" if PRODUCT == "BSF" else LOSS
 
 MODE = "American" if AMERICAN else "European"
 FREQ_NAME = {0: "daily", 1: "monthly", 2: "bi-monthly", 3: "quarterly", 6: "semi-annually"}.get(FREQ, f"every {FREQ}m")
@@ -61,11 +63,15 @@ TERMS = f"strike {STRIKE:.0%}" + {
            f", autocall {TRIGGER:.0%} {FREQ_NAME}" + (f" after {DELAY}m delay" if DELAY else ""),
     "RC": "",
     "BRC": f", knock-in barrier {BARRIER:.0%} {MODE}",
-    "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m"
+    "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m" + (
+    "" if PRODUCT == "BSF" else ", cash-settled" if LOSS == "CASH_SETTLEMENT" else ", physically settled")
 
 prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dropna()
 prices_df = prices_df.set_index(prices_df.columns[0]).sort_index()
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
+NAMES = [str(c).strip() for c in prices_df.columns]
+# 2+ price columns = worst-of basket: every test uses the worst performer vs. its own launch level
+UNDERLYING = (text("Ticker") or "/".join(NAMES)) + (" worst-of" if len(NAMES) > 1 else "")
 launch_start = pd.Timestamp(p["Launch Start"])
 launch_end = dates[-1] if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
 
@@ -105,10 +111,10 @@ def classify(i):
     if PRODUCT == "BSF":
         if end >= BARRIER:  # American hits already returned above, so this is the European maturity test
             return "KNOCKED_OUT", j
-        return ("PARTICIPATION_ITM" if end >= STRIKE else "PARTICIPATION_OTM"), i
+        return ("UPSIDE_PAID" if end >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), i
     breached = PRODUCT != "BRC" or (path <= BARRIER).any()  # FCN/RC have no barrier: strike test alone
     if breached and end < STRIKE:
-        return "PHYSICAL_DELIVERY", i
+        return LOSS, i
     # BRC only: barrier was hit during the life but the note recovered to >= strike, so cash after all
     return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), i
 
@@ -137,7 +143,7 @@ ax.plot([], [], color="firebrick", label=f"{BAD}: {when} ({len(bad)} of {n} laun
                                              + (f", {len(days)} days)" if PRODUCT == "BSF" else ")"))  # solid legend swatch
 if pending:
     ax.plot([], [], color="lightgrey", label=f"OUTSTANDING: launch date, maturity not reached yet ({len(pending)})")
-ax.set(title=f"{p['Ticker']} {PRODUCT} - {TERMS}",
+ax.set(title=f"{UNDERLYING} {PRODUCT} - {TERMS}",
        ylabel="Price" if px.shape[1] == 1 else "Worst-of vs. start (x)")
 ax.legend(loc="upper left", frameon=False)
 ax.spines[["top", "right"]].set_visible(False)

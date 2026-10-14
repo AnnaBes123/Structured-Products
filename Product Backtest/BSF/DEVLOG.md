@@ -76,3 +76,17 @@ The output table now has a `Terms` row under `Product`, worded for this product 
 the General cell's `Terms` row - see `Product Backtest/General/DEVLOG.md`, 2026-10-12). For BRC/BSF
 the monitoring mode moved out of the `Product` row into `Terms`. Wording only: every number in the
 table equals the General cell's for the same terms (checked on PFE, 12m).
+
+## Buckets renamed: UPSIDE_PAID / NO_UPSIDE_BELOW_STRIKE (2026-10-14)
+
+PARTICIPATION_ITM / PARTICIPATION_OTM were option jargon for "the investor got upside" and "the
+investor didn't". Renamed in `BSF.py`, `BSF Python-in-Excel.py` and both General cells; rules
+unchanged:
+
+- UPSIDE_PAID (was PARTICIPATION_ITM): never knocked out, finished >= strike - participation pays.
+- NO_UPSIDE_BELOW_STRIKE (was PARTICIPATION_OTM): never knocked out, finished < strike - principal
+  back, no gain.
+- KNOCKED_OUT: unchanged - principal back (+ rebate, not modelled), no gain.
+
+Verified: outcomes identical launch-for-launch to the previous names (AAPL single and AAPL/MSFT/NVDA
+basket, American and European); self-test passes. Old audit CSVs keep the old names.

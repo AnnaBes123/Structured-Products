@@ -106,6 +106,17 @@ def fetch_risk_free_rate(entry_date, fred_series="DGS1", lookback_days=10):
     return float(data[fred_series].iloc[-1]) / 100.0
 
 
+def fetch_risk_free_rate_series(start, end, fred_series="DGS1", lookback_days=10):
+    """Daily FRED DGS1 prints as decimals over [start, end] in one call -
+    for marking a note on many dates (reindex + ffill onto trading days)."""
+    import pandas_datareader.data as web
+    start = pd.Timestamp(start) - pd.Timedelta(days=lookback_days)
+    data = web.DataReader(fred_series, "fred", start, pd.Timestamp(end)).dropna()
+    if data.empty:
+        raise RuntimeError(f"No {fred_series} data available from FRED between {start.date()} and {pd.Timestamp(end).date()}.")
+    return data[fred_series] / 100.0
+
+
 def fetch_trailing_realized_vol(ticker, entry_date, lookback_years=2):
     """Single-name vol input: trailing realized vol on the ticker's own
     history (see each product's README "Volatility" section for why, vs.

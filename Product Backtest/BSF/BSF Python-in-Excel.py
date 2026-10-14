@@ -7,9 +7,9 @@ same convention as this repo's other Python-in-Excel snippets:
     back (+ any fixed rebate - not modeled, this reports outcome buckets only, not $ payoffs)
     (bucket: KNOCKED_OUT). STRIKE is irrelevant once knocked out - the rebate doesn't depend on it.
   - Barrier never touched, finishes >= STRIKE at maturity -> participation payoff is positive
-    (bucket: PARTICIPATION_ITM).
+    (bucket: UPSIDE_PAID).
   - Barrier never touched, finishes < STRIKE at maturity -> never knocked out, but the
-    participation payoff is zero - same as principal back with no gain (bucket: PARTICIPATION_OTM).
+    participation payoff is zero - same as principal back with no gain (bucket: NO_UPSIDE_BELOW_STRIKE).
 Two barrier-monitoring modes (param below), same idea as BRC: European = barrier checked ONLY at
 the single maturity observation; American = checked on every trading day from launch through
 maturity (a running-min touch test). STRIKE should be set <= BARRIER (not enforced - barebones).
@@ -59,7 +59,7 @@ def classify(i):
     worst = live[-1]
     if worst >= BARRIER:
         return "KNOCKED_OUT", True
-    return ("PARTICIPATION_ITM" if worst >= STRIKE else "PARTICIPATION_OTM"), True
+    return ("UPSIDE_PAID" if worst >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), True
 
 
 rows = [classify(i) for i, d in enumerate(all_dates) if launch_start <= d <= launch_end]
@@ -75,13 +75,13 @@ result = pd.DataFrame([
     ("Terms", f"strike {STRIKE:.0%}, knock-out barrier {BARRIER:.0%} {'American' if AMERICAN else 'European'}, "
               f"tenor {TENOR_MONTHS}m"),
     ("Launches", len(labels)),
-    ("Participation (ITM) %", fmt_pct("PARTICIPATION_ITM", labels)),
-    ("Participation (OTM) %", fmt_pct("PARTICIPATION_OTM", labels)),
+    ("Upside Paid %", fmt_pct("UPSIDE_PAID", labels)),
+    ("No Upside, Below Strike %", fmt_pct("NO_UPSIDE_BELOW_STRIKE", labels)),
     ("Knocked Out %", fmt_pct("KNOCKED_OUT", labels)),
     ("Outstanding %", fmt_pct("OUTSTANDING", labels)),
     ("Completed Launches", len(completed)),
-    ("Completed Participation (ITM) %", fmt_pct("PARTICIPATION_ITM", completed)),
-    ("Completed Participation (OTM) %", fmt_pct("PARTICIPATION_OTM", completed)),
+    ("Completed Upside Paid %", fmt_pct("UPSIDE_PAID", completed)),
+    ("Completed No Upside, Below Strike %", fmt_pct("NO_UPSIDE_BELOW_STRIKE", completed)),
     ("Completed Knocked Out %", fmt_pct("KNOCKED_OUT", completed)),
 ], columns=["Metric", "Value"])
 result
