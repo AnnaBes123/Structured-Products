@@ -89,3 +89,43 @@ Both cells split BRC's MATURITY_CASH into "never breached" and "breached, recove
 see `Product Backtest/BRC/DEVLOG.md` (2026-10-12) for the rule, why it is empty under European
 monitoring, and the verification. FCN and RC are unaffected (no barrier). The chart still marks
 PHYSICAL_DELIVERY only for BRC.
+
+## Inputs: percentages, named autocall frequency, "delay to first observation" (2026-10-13)
+
+Both cells; the 12 rows and their order are unchanged, only what rows 3-4, 6, 7, 8 accept.
+
+- **Levels as percentages (Strike, Barrier, Autocall Trigger).** Enter 130%, not 1.3. A cell Excel
+  shows as 130% already holds 1.3, so that needed no code. What is new: a typed plain `130`, or the
+  text `130%`, is also read as 130%. Rule: anything above 5 is taken as percentage points (no real
+  strike or barrier is above 500%). The cost of that rule: a level genuinely meant as a fraction above
+  5 can't be entered, and a plain `5` means 500%, not 5%.
+- **Autocall Frequency** (was "Autocall Frequency Months"): Daily, Monthly, Bi-Monthly, Quarterly,
+  Semi-Annually. Blank or 0 = no autocall. A bare number is still read as months, so an existing
+  sheet with `3` keeps working. Bi-Monthly is read as **every 2 months** (not twice a month) - the
+  usual meaning for an observation schedule, but the word is ambiguous. An unrecognised word raises
+  an error rather than silently meaning "no autocall".
+- **Daily** is new behaviour, not just a new label: every trading day after launch (after the delay)
+  and strictly before the maturity day is an observation. With the trigger at 100% that calls almost
+  every note that ever closes above its launch level, so expect very high AUTOCALL shares.
+- **Autocall Delay to First Observation (Months)** (was "Autocall Lockout Months"): `No delay`, 0 or
+  blank, or whole months. Same rule as the old lockout, renamed: the delay is added *before the first
+  period starts*, so the first observation is at delay + one period (quarterly + 3 -> month 6, month 3
+  skipped). Rejected alternative: treating the number as the month of the first observation itself -
+  that would have silently changed results for anyone already using a lockout.
+- **Tenor Months** was already live; it now also tolerates `12m`. The `Terms` row / chart title echo
+  the tenor the cell actually used, which is the quick way to confirm an edit was picked up.
+
+Verified on AAPL (launches from 2012-01-03): (1) old-style numeric inputs give launch-for-launch the
+same outcomes and chart lines as the previous commit, for FCN (4 schedules), RC, BRC and BSF;
+(2) `90` / `"90%"` / `0.9`, `Quarterly` / `3`, `No delay` / `0` / blank all give identical results;
+(3) every frequency x {no delay, 3m delay} x {6m, 12m tenor} matches a plain-loop reimplementation
+on every launch, table and chart; (4) tenor 3/6/9/12/18/24/36 each give a different mix (e.g.
+PHYSICAL_DELIVERY 13.2% at 3m, 5.5% at 12m, 0.0% at 24m for strike 90%, quarterly).
+
+The single-product cells (`FCN Python-in-Excel.py` etc.) still take fractions, a months number and
+"Autocall Lockout Months" - not changed here.
+
+Label formulas, replacing the 2026-10-12 ones for rows 7-8:
+
+    G7  =IF(UPPER(TRIM($H$2))="FCN","Autocall Frequency","(not used - no autocall)")
+    G8  =IF(UPPER(TRIM($H$2))="FCN","Autocall Delay to First Observation (Months)","(not used - no autocall)")

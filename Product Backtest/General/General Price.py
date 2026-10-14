@@ -12,27 +12,53 @@ import matplotlib.pyplot as plt
 raw = xl("General!G1:H12")
 # read by row, not by label, so the G labels are free to change wording with the product
 p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
-              "Autocall Frequency Months", "Autocall Lockout Months", "Tenor Months", "Launch Start",
+              "Autocall Frequency", "Autocall Delay", "Tenor Months", "Launch Start",
               "Launch End", "Max Gap Days"], raw.iloc[:, 1]))
 
 
-def num(label):
-    return 0.0 if pd.isna(p[label]) else float(p[label])
+def text(label):
+    return "" if pd.isna(p[label]) else str(p[label]).strip().upper()
 
 
-PRODUCT = str(p["Product"]).strip().upper()
-STRIKE, BARRIER, TRIGGER = num("Strike"), num("Barrier"), num("Autocall Trigger")
-AMERICAN = str(p["Barrier Monitoring"]).strip().upper().startswith("A")
-TENOR, FREQ, LOCKOUT, MAX_GAP = (int(num(k)) for k in
-                                 ("Tenor Months", "Autocall Frequency Months", "Autocall Lockout Months", "Max Gap Days"))
-OBS_MONTHS = range(LOCKOUT + FREQ, TENOR, FREQ) if PRODUCT == "FCN" and FREQ else []  # never month 0
+def level(label):
+    """Level as a fraction of launch. Excel's 130% already arrives as 1.3; a typed 130 or '130%' also works."""
+    s = text(label)
+    x = float(s.rstrip("%") or 0)
+    return x / 100 if s.endswith("%") or x > 5 else x  # no real strike/barrier is above 500%
+
+
+def months(label):
+    """Whole months; blank, 0 or 'No delay' -> 0; a stray 'm' (e.g. '6m') is tolerated."""
+    s = text(label).replace("MONTHS", "").replace("M", "").strip()
+    return 0 if not s or s.startswith("NO") else int(float(s))
+
+
+def frequency(label):
+    """None = no autocall, 0 = every trading day, otherwise months between observations."""
+    s = text(label).replace("-", "").replace(" ", "")
+    named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "SEMIANNUALLY": 6, "SEMIANNUAL": 6}
+    if s in named:
+        return named[s]
+    if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:  # a bare number still means months
+        return None
+    return int(float(s))
+
+
+PRODUCT = text("Product")
+STRIKE, BARRIER, TRIGGER = level("Strike"), level("Barrier"), level("Autocall Trigger")
+AMERICAN = text("Barrier Monitoring").startswith("A")
+TENOR, DELAY, MAX_GAP = months("Tenor Months"), months("Autocall Delay"), months("Max Gap Days")
+FREQ = frequency("Autocall Frequency") if PRODUCT == "FCN" else None
+# first observation = delay + one period, so never the launch day itself
+OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if FREQ else []
 BAD = {"FCN": "PHYSICAL_DELIVERY", "RC": "PHYSICAL_DELIVERY", "BRC": "PHYSICAL_DELIVERY",
        "BSF": "KNOCKED_OUT"}[PRODUCT]
 
 MODE = "American" if AMERICAN else "European"
+FREQ_NAME = {0: "daily", 1: "monthly", 2: "bi-monthly", 3: "quarterly", 6: "semi-annually"}.get(FREQ, f"every {FREQ}m")
 TERMS = f"strike {STRIKE:.0%}" + {
-    "FCN": f", autocall {TRIGGER:.0%} every {FREQ}m" + (f" after {LOCKOUT}m lockout" if LOCKOUT else "")
-           if FREQ else ", no autocall",
+    "FCN": ", no autocall" if FREQ is None else
+           f", autocall {TRIGGER:.0%} {FREQ_NAME}" + (f" after {DELAY}m delay" if DELAY else ""),
     "RC": "",
     "BRC": f", knock-in barrier {BARRIER:.0%} {MODE}",
     "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m"
@@ -49,15 +75,26 @@ def map_obs(target):
     return None if pos >= len(dates) or (dates[pos] - target).days > MAX_GAP else pos
 
 
+def autocalled(i, j):
+    """True if an observation strictly between launch day and maturity day closes at/above the trigger."""
+    s0, end = px[i], len(dates) if j is None else j  # maturity's own day belongs to the strike test
+    if FREQ == 0:  # daily: every trading day after the delay
+        first = int(dates.searchsorted(dates[i] + pd.DateOffset(months=DELAY), side="right"))
+        return bool(((px[first:end] / s0).min(axis=1) >= TRIGGER).any())
+    for m in OBS_MONTHS:
+        k = map_obs(dates[i] + pd.DateOffset(months=m))
+        if k is not None and i < k < end and (px[k] / s0).min() >= TRIGGER:
+            return True
+    return False
+
+
 def classify(i):
     """(outcome, row to mark on the chart) for the note launched on trading day i - same rules as the
     backtest cell. Row = launch day, except a BSF knock-out = the day the barrier was hit."""
     s0 = px[i]
     j = map_obs(dates[i] + pd.DateOffset(months=TENOR))
-    for m in OBS_MONTHS:
-        k = map_obs(dates[i] + pd.DateOffset(months=m))
-        if k is not None and i < k and (j is None or k < j) and (px[k] / s0).min() >= TRIGGER:
-            return "AUTOCALL", i
+    if FREQ is not None and autocalled(i, j):
+        return "AUTOCALL", i
     live = (px[i:None if j is None else j + 1] / s0).min(axis=1)  # worst-of, launch -> maturity (or as-of)
     if PRODUCT == "BSF" and AMERICAN and (live >= BARRIER).any():
         return "KNOCKED_OUT", i + int((live >= BARRIER).argmax())  # first hit; final even before maturity
