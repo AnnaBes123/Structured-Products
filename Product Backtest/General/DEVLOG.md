@@ -155,3 +155,46 @@ avg 83.3%, worst 56.2%, settled on AAPL 18.8% / MSFT 7.1% / NVDA 74.1%).
 Label formula for the new row (optional):
 
     G13 =IF(UPPER(TRIM($H$2))="BSF","(not used - no loss case)","Settlement")
+
+## Chart: every underlying shown for a basket (2026-10-14)
+
+`General Price.py` already used the worst-of and already read percentage inputs (130 = "130%" = 1.3;
+re-checked: identical chart lines for BSF, BRC and FCN, single and basket). New: with 2+ tickers it
+now draws each underlying rebased to 100% at the first date, plus the worst-of in black - the line
+the note actually observes - with all names in the legend. The basket y-axis is log-scale, in %,
+because one big winner (NVDA ~450x since 2015) otherwise flattens every other line. Note the black
+line is the worst-of vs. the *first date of the chart*; each note's own tests use the worst-of vs.
+its own launch date, which can be a different underlying. Single-ticker charts are unchanged (price,
+linear axis).
+
+## Chart: status selection grid, one colour per outcome (2026-10-15)
+
+`General Price.py` can now draw any of the outcomes, not just the bad one. A two-column grid on the
+sheet (`STATUS_GRID`, default `General!J1:K12`: status name | TRUE/FALSE, checkbox, Y, x or 1) picks
+which; each gets its own colour (autocall blue, cash at maturity / upside paid green, breached-
+recovered / no upside amber, loss / knocked out red, outstanding grey). Statuses that don't apply to
+the Product are ignored, PHYSICAL_DELIVERY and CASH_SETTLEMENT are interchangeable names for the loss
+row, and spacing/case don't matter. No grid, an empty range or nothing ticked falls back to the old
+picture (loss or knock-out, plus outstanding), so an existing sheet doesn't change.
+
+Grid matched by label, unlike the params (matched by row): status rows are optional and in any order,
+so position would be fragile here. Lines stay at the launch date, except KNOCKED_OUT at the knock-out
+date (2026-10-08 entry). Underlyings now use their own palette (purple / brown / pink / slate) so a
+ticker line is never the same colour as a status. Legend moved under the plot - with 4 tickers and
+4 statuses it covered the data.
+
+Kept in step with the table: the chart's params block and classification rules are the same code as
+`General Python-in-Excel.py` (percent levels, named frequencies, delay, settlement, worst-of).
+Verified: with every status ticked, each status's lines are exactly the launches the table cell puts
+in that bucket (knock-outs: same count, drawn on event dates) - FCN quarterly and daily, RC, BRC,
+BSF American and European, on AAPL and AAPL/MSFT/NVDA. Grid parsing checked for: no grid, xl()
+raising, lowercase/spaces/"y", the cash-settlement name, non-applicable rows, nothing ticked.
+
+## Chart colours: one per status, red only for the bad outcome (2026-10-15)
+
+Previously the cash-at-maturity / upside-paid pair shared green and the recovered / no-upside pair
+shared amber. Now every status has its own colour: autocall blue, cash at maturity green, breached-
+recovered amber, upside paid teal, no upside below strike lavender, outstanding grey, and red only for
+the product's bad outcome (loss for FCN/RC/BRC, knock-out for BSF - never on the same chart). The bad
+outcome is also drawn stronger (alpha 0.25 vs 0.12) so red reads first. Tickers moved to navy /
+brown / pink / olive so none matches a status. Outcomes unchanged (same 12-case check as above).

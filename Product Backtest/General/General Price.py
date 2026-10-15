@@ -1,9 +1,26 @@
 """
-Body of ONE Excel =PY() cell: price path chart, with a vertical red line for every launch that hit the
-product's marked outcome - at its launch date, except BSF, drawn at the date the knock-out occurred. Same "General" sheet and params (A:E prices, G:H params)
-as `General Python-in-Excel.py` - edit the Product/terms there and this chart redraws.
-Marked outcome: FCN/RC/BRC = PHYSICAL_DELIVERY or CASH_SETTLEMENT (per Settlement); BSF (principal-protected, no delivery) = KNOCKED_OUT.
-Paste everything below the ---8<--- line into the cell; the chart shows as an image.
+Body of ONE Excel =PY() cell: price path chart for the "General" sheet - same params (G1:H13), same price
+range (A:E, up to 4 tickers = worst-of) and same outcome rules as `General Python-in-Excel.py`, so every
+line here is a launch that the table counts in that bucket. Percent inputs (130, "130%", 1.3) and named
+autocall frequencies are read exactly as the table reads them.
+
+One vertical line per launch, coloured by outcome, at its launch date - except KNOCKED_OUT, drawn at the
+day the knock-out occurred. Which outcomes are drawn comes from a selection grid (see STATUS_GRID below,
+default General!J1:K12 - move it if your table cell spills there):
+    J (Status)                 K (Show: TRUE/FALSE, checkbox, Y/N, x or 1)
+    AUTOCALL                   TRUE
+    MATURITY_CASH              FALSE
+    BREACHED_RECOVERED         FALSE
+    PHYSICAL_DELIVERY          TRUE      (also covers CASH_SETTLEMENT - either name works)
+    UPSIDE_PAID                FALSE
+    NO_UPSIDE_BELOW_STRIKE     FALSE
+    KNOCKED_OUT                TRUE
+    OUTSTANDING                TRUE
+Spaces instead of underscores and any order are fine; rows that don't apply to the Product are ignored.
+No grid, or nothing ticked -> the product's bad outcome (loss case; BSF: KNOCKED_OUT) plus OUTSTANDING.
+
+2+ tickers: every underlying is drawn (rebased to 100% at the first date, log scale) plus the worst-of in
+black - the line every test uses. Paste everything below the ---8<--- line; the chart shows as an image.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
@@ -119,32 +136,68 @@ def classify(i):
     return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), i
 
 
-# single ticker: actual price; basket: worst-of performance vs. first date
+STATUS_GRID = "General!J1:K12"  # status | show; move if this overlaps your table's spill range
+# every status and ticker has its own colour; red is only the bad outcome (loss, or BSF's knock-out -
+# never on the same chart, as BSF has no loss case)
+COLORS = {"AUTOCALL": "dodgerblue", "MATURITY_CASH": "seagreen", "BREACHED_RECOVERED": "goldenrod",
+          "UPSIDE_PAID": "darkcyan", "NO_UPSIDE_BELOW_STRIKE": "mediumpurple", "OUTSTANDING": "grey",
+          "KNOCKED_OUT": "firebrick", LOSS: "firebrick"}
+TICKER_COLORS = ["navy", "saddlebrown", "deeppink", "olive"]
+APPLIES = {"FCN": ["AUTOCALL", "MATURITY_CASH", LOSS], "RC": ["MATURITY_CASH", LOSS],
+           "BRC": ["MATURITY_CASH", "BREACHED_RECOVERED", LOSS],
+           "BSF": ["UPSIDE_PAID", "NO_UPSIDE_BELOW_STRIKE", "KNOCKED_OUT"]}[PRODUCT] + ["OUTSTANDING"]
+
+
+def wanted():
+    """Statuses ticked in the grid that apply to this product; default if there is no usable grid."""
+    try:
+        grid = xl(STATUS_GRID)
+    except Exception:  # range missing/empty
+        grid = None
+    grid = grid if isinstance(grid, pd.DataFrame) else pd.DataFrame()
+    show = set()
+    for name, flag in grid.iloc[:, :2].itertuples(index=False) if grid.shape[1] >= 2 else []:
+        key = str(name).strip().upper().replace(" ", "_").replace("-", "_")
+        key = LOSS if key in ("PHYSICAL_DELIVERY", "CASH_SETTLEMENT", "LOSS") else key
+        if str(flag).strip().upper() in ("TRUE", "Y", "YES", "X", "1", "1.0") and key in APPLIES:
+            show.add(key)
+    return [b for b in APPLIES if b in show] or [BAD, "OUTSTANDING"]
+
+
+SHOW = wanted()
+# single ticker: actual price; basket: every underlying and the worst-of, each vs. its own first date
 y = px[:, 0] if px.shape[1] == 1 else (px / px[0]).min(axis=1)
-bad, pending, n = [], [], 0
+marks, n = {b: [] for b in SHOW}, 0
 for i, d in enumerate(dates):
     if launch_start <= d <= launch_end:
         n += 1
         outcome, k = classify(i)
-        if outcome == BAD:
-            bad.append(dates[k])
-        elif outcome == "OUTSTANDING":
-            pending.append(dates[i])
-days = sorted(set(bad))  # many launches knock out on the same day - draw each day once
-when = "knock-out date" if PRODUCT == "BSF" else "launch date"
+        if outcome in marks:
+            marks[outcome].append(dates[k])
 
-fig, ax = plt.subplots(figsize=(11, 5))
-ax.plot(dates, y, color="black", lw=0.8)
-# grey = launches with no outcome yet, so "no red here" isn't misread as "no bad outcomes here"
-ax.vlines(pending, 0, 1, transform=ax.get_xaxis_transform(), colors="grey", lw=0.5, alpha=0.15)
-ax.vlines(days, 0, 1, transform=ax.get_xaxis_transform(), colors="firebrick", lw=0.5,
-          alpha=0.5 if PRODUCT == "BSF" else 0.15)  # full height; BSF days are de-duplicated, so less overlap
-ax.plot([], [], color="firebrick", label=f"{BAD}: {when} ({len(bad)} of {n} launches"
-                                             + (f", {len(days)} days)" if PRODUCT == "BSF" else ")"))  # solid legend swatch
-if pending:
-    ax.plot([], [], color="lightgrey", label=f"OUTSTANDING: launch date, maturity not reached yet ({len(pending)})")
+fig, ax = plt.subplots(figsize=(11, 5.5))
+if px.shape[1] > 1:
+    for k, name in enumerate(NAMES):
+        ax.plot(dates, px[:, k] / px[0, k], lw=0.9, label=name, color=TICKER_COLORS[k])
+ax.plot(dates, y, color="black", lw=1.2 if px.shape[1] > 1 else 0.8,
+        label="Worst-of (what the note observes)" if px.shape[1] > 1 else None)
+for b in sorted(SHOW, key=lambda b: b != "OUTSTANDING"):  # grey first, so outcomes sit on top of it
+    ds = marks[b]
+    days = sorted(set(ds))  # KO: many launches share one knock-out day - draw each day once
+    event = b == "KNOCKED_OUT"
+    ax.vlines(days, 0, 1, transform=ax.get_xaxis_transform(), colors=COLORS[b], lw=0.5,
+              alpha=(0.5 if event else 0.25) if b == BAD else (0.35 if event else 0.12))  # red stands out
+    ax.plot([], [], color=COLORS[b], label=f"{b}: {'knock-out date' if event else 'launch date'} "
+                                           f"({len(ds)} of {n} launches" + (f", {len(days)} days)" if event else ")"))
 ax.set(title=f"{UNDERLYING} {PRODUCT} - {TERMS}",
-       ylabel="Price" if px.shape[1] == 1 else "Worst-of vs. start (x)")
-ax.legend(loc="upper left", frameon=False)
+       ylabel="Price" if px.shape[1] == 1 else "Performance vs. first date")
+if px.shape[1] > 1:
+    ax.set_yscale("log")  # one big winner (e.g. NVDA ~450x) would otherwise flatten the worst-of line
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
+    ax.yaxis.set_minor_formatter(plt.NullFormatter())
+leg = ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=2, frameon=False, fontsize=8)
+for h in leg.get_lines():
+    h.set_linewidth(2)  # thin chart lines make unreadable legend swatches
 ax.spines[["top", "right"]].set_visible(False)
+fig.tight_layout()
 fig
