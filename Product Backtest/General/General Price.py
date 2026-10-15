@@ -5,8 +5,8 @@ line here is a launch that the table counts in that bucket. Percent inputs (130,
 autocall frequencies are read exactly as the table reads them.
 
 One vertical line per launch, coloured by outcome, at its launch date - except KNOCKED_OUT, drawn at the
-day the knock-out occurred. Which outcomes are drawn comes from a selection grid (see STATUS_GRID below,
-default General!J1:K12 - move it if your table cell spills there):
+day the knock-out occurred. Which outcomes are drawn comes from a selection grid at General!J1:K12 (to move it,
+edit the xl("General!J1:K12") address in wanted() - keep it a literal string, not a variable):
     J (Status)                 K (Show: TRUE/FALSE, checkbox, Y/N, x or 1)
     AUTOCALL                   TRUE
     MATURITY_CASH              FALSE
@@ -21,43 +21,59 @@ No grid, or nothing ticked -> the product's bad outcome (loss case; BSF: KNOCKED
 
 2+ tickers: every underlying is drawn (rebased to 100% at the first date, log scale) plus the worst-of in
 black - the line every test uses. Paste everything below the ---8<--- line; the chart shows as an image.
+
+Code notes (kept out of the pasted part - Excel caps a =PY() cell at 8,192 characters, so the code
+below the cut line has no comments; reasons live here and in DEVLOG.md):
+  - Params are read by row position in G1:H13, not by label, so the G labels can be reworded freely.
+    p.get() lets a sheet that stops at row 12 (no Settlement row) still work.
+  - level(): Excel's 130% arrives as 1.3; a typed 130 or "130%" also works - anything above 5 is read
+    as percentage points (no real strike/barrier is above 500%).
+  - frequency(): named frequencies, or a bare number = months; blank/0 = no autocall. First
+    observation = delay + one period, so never the launch day. Daily = every trading day after the
+    delay. An observation must fall strictly before the maturity day (that day is the strike test).
+  - 2+ price columns = worst-of: every test uses the worst performer vs. its own launch level, and a
+    loss is settled on it (its shares, or their value in cash - same value, so Settlement only renames).
+  - classify(): a BSF American knock-out is final the day it's hit, even before maturity is in the
+    data. European = maturity day only. FCN/RC have no barrier (strike test alone); BRC barrier hit
+    then recovered to >= strike = BREACHED_RECOVERED (cash).
+  - Chart: the status grid is read with a literal xl("General!J1:K12") because Excel tracks a cell's
+    dependencies from the xl("...") text. Grey (outstanding) is drawn first so outcomes sit on top;
+    knock-out days are de-duplicated (many launches share one). Red = the bad outcome only (loss, or
+    BSF's knock-out - never on the same chart) and drawn stronger. Basket y-axis is log so one big
+    winner (e.g. NVDA ~450x) doesn't flatten the worst-of line.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 import matplotlib.pyplot as plt
 
 raw = xl("General!G1:H13")
-# read by row, not by label, so the G labels are free to change wording with the product
 p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
               "Autocall Frequency", "Autocall Delay", "Tenor Months", "Launch Start",
               "Launch End", "Max Gap Days", "Settlement"], raw.iloc[:, 1]))
 
 
 def text(label):
-    v = p.get(label)  # .get: a sheet without the newer rows (e.g. Settlement) still works
+    v = p.get(label)
     return "" if v is None or pd.isna(v) else str(v).strip().upper()
 
 
 def level(label):
-    """Level as a fraction of launch. Excel's 130% already arrives as 1.3; a typed 130 or '130%' also works."""
     s = text(label)
     x = float(s.rstrip("%") or 0)
-    return x / 100 if s.endswith("%") or x > 5 else x  # no real strike/barrier is above 500%
+    return x / 100 if s.endswith("%") or x > 5 else x
 
 
 def months(label):
-    """Whole months; blank, 0 or 'No delay' -> 0; a stray 'm' (e.g. '6m') is tolerated."""
     s = text(label).replace("MONTHS", "").replace("M", "").strip()
     return 0 if not s or s.startswith("NO") else int(float(s))
 
 
 def frequency(label):
-    """None = no autocall, 0 = every trading day, otherwise months between observations."""
     s = text(label).replace("-", "").replace(" ", "")
     named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "SEMIANNUALLY": 6, "SEMIANNUAL": 6}
     if s in named:
         return named[s]
-    if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:  # a bare number still means months
+    if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:
         return None
     return int(float(s))
 
@@ -65,11 +81,9 @@ def frequency(label):
 PRODUCT = text("Product")
 STRIKE, BARRIER, TRIGGER = level("Strike"), level("Barrier"), level("Autocall Trigger")
 AMERICAN = text("Barrier Monitoring").startswith("A")
-# below-strike loss (FCN/RC/BRC) is settled on the worst performer: its shares, or their value in cash
 LOSS = "CASH_SETTLEMENT" if text("Settlement").startswith("C") else "PHYSICAL_DELIVERY"
 TENOR, DELAY, MAX_GAP = months("Tenor Months"), months("Autocall Delay"), months("Max Gap Days")
 FREQ = frequency("Autocall Frequency") if PRODUCT == "FCN" else None
-# first observation = delay + one period, so never the launch day itself
 OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if FREQ else []
 BAD = "KNOCKED_OUT" if PRODUCT == "BSF" else LOSS
 
@@ -87,7 +101,6 @@ prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dro
 prices_df = prices_df.set_index(prices_df.columns[0]).sort_index()
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
 NAMES = [str(c).strip() for c in prices_df.columns]
-# 2+ price columns = worst-of basket: every test uses the worst performer vs. its own launch level
 UNDERLYING = (text("Ticker") or "/".join(NAMES)) + (" worst-of" if len(NAMES) > 1 else "")
 launch_start = pd.Timestamp(p["Launch Start"])
 launch_end = dates[-1] if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
@@ -99,9 +112,8 @@ def map_obs(target):
 
 
 def autocalled(i, j):
-    """True if an observation strictly between launch day and maturity day closes at/above the trigger."""
-    s0, end = px[i], len(dates) if j is None else j  # maturity's own day belongs to the strike test
-    if FREQ == 0:  # daily: every trading day after the delay
+    s0, end = px[i], len(dates) if j is None else j
+    if FREQ == 0:
         first = int(dates.searchsorted(dates[i] + pd.DateOffset(months=DELAY), side="right"))
         return bool(((px[first:end] / s0).min(axis=1) >= TRIGGER).any())
     for m in OBS_MONTHS:
@@ -112,33 +124,27 @@ def autocalled(i, j):
 
 
 def classify(i):
-    """(outcome, row to mark on the chart) for the note launched on trading day i - same rules as the
-    backtest cell. Row = launch day, except a BSF knock-out = the day the barrier was hit."""
     s0 = px[i]
     j = map_obs(dates[i] + pd.DateOffset(months=TENOR))
     if FREQ is not None and autocalled(i, j):
         return "AUTOCALL", i
-    live = (px[i:None if j is None else j + 1] / s0).min(axis=1)  # worst-of, launch -> maturity (or as-of)
+    live = (px[i:None if j is None else j + 1] / s0).min(axis=1)
     if PRODUCT == "BSF" and AMERICAN and (live >= BARRIER).any():
-        return "KNOCKED_OUT", i + int((live >= BARRIER).argmax())  # first hit; final even before maturity
+        return "KNOCKED_OUT", i + int((live >= BARRIER).argmax())
     if j is None:
         return "OUTSTANDING", i
-    path = live if AMERICAN else live[-1:]  # European = maturity day only
+    path = live if AMERICAN else live[-1:]
     end = path[-1]
     if PRODUCT == "BSF":
-        if end >= BARRIER:  # American hits already returned above, so this is the European maturity test
+        if end >= BARRIER:
             return "KNOCKED_OUT", j
         return ("UPSIDE_PAID" if end >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), i
-    breached = PRODUCT != "BRC" or (path <= BARRIER).any()  # FCN/RC have no barrier: strike test alone
+    breached = PRODUCT != "BRC" or (path <= BARRIER).any()
     if breached and end < STRIKE:
         return LOSS, i
-    # BRC only: barrier was hit during the life but the note recovered to >= strike, so cash after all
     return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), i
 
 
-STATUS_GRID = "General!J1:K12"  # status | show; move if this overlaps your table's spill range
-# every status and ticker has its own colour; red is only the bad outcome (loss, or BSF's knock-out -
-# never on the same chart, as BSF has no loss case)
 COLORS = {"AUTOCALL": "dodgerblue", "MATURITY_CASH": "seagreen", "BREACHED_RECOVERED": "goldenrod",
           "UPSIDE_PAID": "darkcyan", "NO_UPSIDE_BELOW_STRIKE": "mediumpurple", "OUTSTANDING": "grey",
           "KNOCKED_OUT": "firebrick", LOSS: "firebrick"}
@@ -149,10 +155,9 @@ APPLIES = {"FCN": ["AUTOCALL", "MATURITY_CASH", LOSS], "RC": ["MATURITY_CASH", L
 
 
 def wanted():
-    """Statuses ticked in the grid that apply to this product; default if there is no usable grid."""
     try:
-        grid = xl(STATUS_GRID)
-    except Exception:  # range missing/empty
+        grid = xl("General!J1:K12")
+    except Exception:
         grid = None
     grid = grid if isinstance(grid, pd.DataFrame) else pd.DataFrame()
     show = set()
@@ -165,7 +170,6 @@ def wanted():
 
 
 SHOW = wanted()
-# single ticker: actual price; basket: every underlying and the worst-of, each vs. its own first date
 y = px[:, 0] if px.shape[1] == 1 else (px / px[0]).min(axis=1)
 marks, n = {b: [] for b in SHOW}, 0
 for i, d in enumerate(dates):
@@ -181,23 +185,23 @@ if px.shape[1] > 1:
         ax.plot(dates, px[:, k] / px[0, k], lw=0.9, label=name, color=TICKER_COLORS[k])
 ax.plot(dates, y, color="black", lw=1.2 if px.shape[1] > 1 else 0.8,
         label="Worst-of (what the note observes)" if px.shape[1] > 1 else None)
-for b in sorted(SHOW, key=lambda b: b != "OUTSTANDING"):  # grey first, so outcomes sit on top of it
+for b in sorted(SHOW, key=lambda b: b != "OUTSTANDING"):
     ds = marks[b]
-    days = sorted(set(ds))  # KO: many launches share one knock-out day - draw each day once
+    days = sorted(set(ds))
     event = b == "KNOCKED_OUT"
     ax.vlines(days, 0, 1, transform=ax.get_xaxis_transform(), colors=COLORS[b], lw=0.5,
-              alpha=(0.5 if event else 0.25) if b == BAD else (0.35 if event else 0.12))  # red stands out
+              alpha=(0.5 if event else 0.25) if b == BAD else (0.35 if event else 0.12))
     ax.plot([], [], color=COLORS[b], label=f"{b}: {'knock-out date' if event else 'launch date'} "
                                            f"({len(ds)} of {n} launches" + (f", {len(days)} days)" if event else ")"))
 ax.set(title=f"{UNDERLYING} {PRODUCT} - {TERMS}",
        ylabel="Price" if px.shape[1] == 1 else "Performance vs. first date")
 if px.shape[1] > 1:
-    ax.set_yscale("log")  # one big winner (e.g. NVDA ~450x) would otherwise flatten the worst-of line
+    ax.set_yscale("log")
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.0%}"))
     ax.yaxis.set_minor_formatter(plt.NullFormatter())
 leg = ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.08), ncol=2, frameon=False, fontsize=8)
 for h in leg.get_lines():
-    h.set_linewidth(2)  # thin chart lines make unreadable legend swatches
+    h.set_linewidth(2)
 ax.spines[["top", "right"]].set_visible(False)
 fig.tight_layout()
 fig

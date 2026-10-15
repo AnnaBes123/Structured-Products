@@ -24,42 +24,56 @@ Sheet "General":
          Launch End                  (blank -> last price date)
          Max Gap Days                10
          Settlement                  Physical     (or Cash; blank = Physical. FCN/RC/BRC loss case only)
+
+Code notes (kept out of the pasted part - Excel caps a =PY() cell at 8,192 characters, so the code
+below the cut line has no comments; reasons live here and in DEVLOG.md):
+  - Params are read by row position in G1:H13, not by label, so the G labels can be reworded freely.
+    p.get() lets a sheet that stops at row 12 (no Settlement row) still work.
+  - level(): Excel's 130% arrives as 1.3; a typed 130 or "130%" also works - anything above 5 is read
+    as percentage points (no real strike/barrier is above 500%).
+  - frequency(): named frequencies, or a bare number = months; blank/0 = no autocall. First
+    observation = delay + one period, so never the launch day. Daily = every trading day after the
+    delay. An observation must fall strictly before the maturity day (that day is the strike test).
+  - 2+ price columns = worst-of: every test uses the worst performer vs. its own launch level, and a
+    loss is settled on it (its shares, or their value in cash - same value, so Settlement only renames).
+  - classify(): a BSF American knock-out is final the day it's hit, even before maturity is in the
+    data. European = maturity day only. FCN/RC have no barrier (strike test alone); BRC barrier hit
+    then recovered to >= strike = BREACHED_RECOVERED (cash).
+  - Price range A1:E100000 is oversized on purpose; empty rows/columns are dropped.
+  - Loss-case rows: value received per 100% notional = worst performer's maturity level / strike,
+    coupons excluded.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 
 raw = xl("General!G1:H13")
-# read by row, not by label, so the G labels are free to change wording with the product
 p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
               "Autocall Frequency", "Autocall Delay", "Tenor Months", "Launch Start",
               "Launch End", "Max Gap Days", "Settlement"], raw.iloc[:, 1]))
 
 
 def text(label):
-    v = p.get(label)  # .get: a sheet without the newer rows (e.g. Settlement) still works
+    v = p.get(label)
     return "" if v is None or pd.isna(v) else str(v).strip().upper()
 
 
 def level(label):
-    """Level as a fraction of launch. Excel's 130% already arrives as 1.3; a typed 130 or '130%' also works."""
     s = text(label)
     x = float(s.rstrip("%") or 0)
-    return x / 100 if s.endswith("%") or x > 5 else x  # no real strike/barrier is above 500%
+    return x / 100 if s.endswith("%") or x > 5 else x
 
 
 def months(label):
-    """Whole months; blank, 0 or 'No delay' -> 0; a stray 'm' (e.g. '6m') is tolerated."""
     s = text(label).replace("MONTHS", "").replace("M", "").strip()
     return 0 if not s or s.startswith("NO") else int(float(s))
 
 
 def frequency(label):
-    """None = no autocall, 0 = every trading day, otherwise months between observations."""
     s = text(label).replace("-", "").replace(" ", "")
     named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "SEMIANNUALLY": 6, "SEMIANNUAL": 6}
     if s in named:
         return named[s]
-    if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:  # a bare number still means months
+    if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:
         return None
     return int(float(s))
 
@@ -67,11 +81,9 @@ def frequency(label):
 PRODUCT = text("Product")
 STRIKE, BARRIER, TRIGGER = level("Strike"), level("Barrier"), level("Autocall Trigger")
 AMERICAN = text("Barrier Monitoring").startswith("A")
-# below-strike loss (FCN/RC/BRC) is settled on the worst performer: its shares, or their value in cash
 LOSS = "CASH_SETTLEMENT" if text("Settlement").startswith("C") else "PHYSICAL_DELIVERY"
 TENOR, DELAY, MAX_GAP = months("Tenor Months"), months("Autocall Delay"), months("Max Gap Days")
 FREQ = frequency("Autocall Frequency") if PRODUCT == "FCN" else None
-# first observation = delay + one period, so never the launch day itself
 OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if FREQ else []
 BUCKETS = {"FCN": ["AUTOCALL", "MATURITY_CASH", LOSS],
            "RC": ["MATURITY_CASH", LOSS],
@@ -88,26 +100,23 @@ TERMS = f"strike {STRIKE:.0%}" + {
     "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m" + (
     "" if PRODUCT == "BSF" else ", cash-settled" if LOSS == "CASH_SETTLEMENT" else ", physically settled")
 
-prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dropna()  # oversized on purpose
+prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dropna()
 prices_df = prices_df.set_index(prices_df.columns[0]).sort_index()
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
 NAMES = [str(c).strip() for c in prices_df.columns]
-# 2+ price columns = worst-of basket: every test uses the worst performer vs. its own launch level
 UNDERLYING = (text("Ticker") or "/".join(NAMES)) + (" worst-of" if len(NAMES) > 1 else "")
 launch_start = pd.Timestamp(p["Launch Start"])
 launch_end = dates[-1] if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
 
 
 def map_obs(target):
-    """Next trading day on/after target; None if past the data or a gap > MAX_GAP (data hole)."""
     pos = int(dates.searchsorted(target))
     return None if pos >= len(dates) or (dates[pos] - target).days > MAX_GAP else pos
 
 
 def autocalled(i, j):
-    """True if an observation strictly between launch day and maturity day closes at/above the trigger."""
-    s0, end = px[i], len(dates) if j is None else j  # maturity's own day belongs to the strike test
-    if FREQ == 0:  # daily: every trading day after the delay
+    s0, end = px[i], len(dates) if j is None else j
+    if FREQ == 0:
         first = int(dates.searchsorted(dates[i] + pd.DateOffset(months=DELAY), side="right"))
         return bool(((px[first:end] / s0).min(axis=1) >= TRIGGER).any())
     for m in OBS_MONTHS:
@@ -118,31 +127,29 @@ def autocalled(i, j):
 
 
 def classify(i):
-    """(outcome, completed, each underlying's level vs. launch on the maturity day - loss cases only)."""
     s0 = px[i]
     j = map_obs(dates[i] + pd.DateOffset(months=TENOR))
     if FREQ is not None and autocalled(i, j):
         return "AUTOCALL", j is not None, None
-    live = (px[i:None if j is None else j + 1] / s0).min(axis=1)  # worst-of, launch -> maturity (or as-of)
+    live = (px[i:None if j is None else j + 1] / s0).min(axis=1)
     if PRODUCT == "BSF" and AMERICAN and (live >= BARRIER).any():
-        return "KNOCKED_OUT", j is not None, None  # KO is final the day it's hit, even if maturity isn't in the data yet
+        return "KNOCKED_OUT", j is not None, None
     if j is None:
         return "OUTSTANDING", False, None
-    path = live if AMERICAN else live[-1:]  # European = maturity day only
+    path = live if AMERICAN else live[-1:]
     end = path[-1]
     if PRODUCT == "BSF":
         return ("KNOCKED_OUT" if (path >= BARRIER).any() else
                 "UPSIDE_PAID" if end >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), True, None
-    breached = PRODUCT != "BRC" or (path <= BARRIER).any()  # FCN/RC have no barrier: strike test alone
+    breached = PRODUCT != "BRC" or (path <= BARRIER).any()
     if breached and end < STRIKE:
         return LOSS, True, px[j] / s0
-    # BRC only: barrier was hit during the life but the note recovered to >= strike, so cash after all
     return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True, None
 
 
 rows = [classify(i) for i, d in enumerate(dates) if launch_start <= d <= launch_end]
 every, completed = [o for o, c, _ in rows], [o for o, c, _ in rows if c]
-losses = np.array([perf for o, c, perf in rows if o == LOSS])  # one row per loss launch, one column per underlying
+losses = np.array([perf for o, c, perf in rows if o == LOSS])
 
 
 def pct(bucket, of):
@@ -152,7 +159,6 @@ def pct(bucket, of):
 settle = []
 if len(losses):
     worst = losses.min(axis=1)
-    # value received per 100% notional, coupons excluded: worst performer's shares (or that much cash)
     settle.append((f"{LOSS}: avg value received (% of notional)", f"{(worst / STRIKE).mean():.1%}"))
     settle.append((f"{LOSS}: worst case (% of notional)", f"{(worst / STRIKE).min():.1%}"))
     if len(NAMES) > 1:

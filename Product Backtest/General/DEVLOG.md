@@ -170,7 +170,7 @@ linear axis).
 ## Chart: status selection grid, one colour per outcome (2026-10-15)
 
 `General Price.py` can now draw any of the outcomes, not just the bad one. A two-column grid on the
-sheet (`STATUS_GRID`, default `General!J1:K12`: status name | TRUE/FALSE, checkbox, Y, x or 1) picks
+sheet (`General!J1:K12`, written as a literal `xl("General!J1:K12")` - Excel finds a cell's dependencies from the xl() text, so a variable holding the address may not refresh the chart: status name | TRUE/FALSE, checkbox, Y, x or 1) picks
 which; each gets its own colour (autocall blue, cash at maturity / upside paid green, breached-
 recovered / no upside amber, loss / knocked out red, outstanding grey). Statuses that don't apply to
 the Product are ignored, PHYSICAL_DELIVERY and CASH_SETTLEMENT are interchangeable names for the loss
@@ -198,3 +198,19 @@ recovered amber, upside paid teal, no upside below strike lavender, outstanding 
 the product's bad outcome (loss for FCN/RC/BRC, knock-out for BSF - never on the same chart). The bad
 outcome is also drawn stronger (alpha 0.25 vs 0.12) so red reads first. Tickers moved to navy /
 brown / pink / olive so none matches a status. Outcomes unchanged (same 12-case check as above).
+
+## Pasted code stripped of comments: Excel's 8,192-character cell limit (2026-10-15)
+
+Excel rejected the chart cell: a =PY() cell holds at most 8,192 characters and the pasted part of
+`General Price.py` had grown to 9,309. Comments and function docstrings were 2,200 of that. Both cells
+now have no comments below the `---8<---` line; the reasons moved into a "Code notes" section in each
+file's module docstring (above the cut, never pasted) and stay in this devlog. Sizes now: chart 7,057,
+table 5,468 characters - about 1,100 / 2,700 of headroom.
+
+Rejected alternative: having the chart reuse the table cell's functions through Python in Excel's
+shared workbook namespace (cells run in row-major order and see earlier cells' globals). It would
+roughly halve the chart, but it silently breaks if the chart cell ever sits before the table cell in
+calculation order, or if the table cell errors.
+
+Verified: the code (syntax tree, docstrings ignored) is identical to the previous commit, apart from
+the literal-xl() grid change above; all 12 chart-vs-table checks still pass.
