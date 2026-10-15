@@ -214,3 +214,22 @@ calculation order, or if the table cell errors.
 
 Verified: the code (syntax tree, docstrings ignored) is identical to the previous commit, apart from
 the literal-xl() grid change above; all 12 chart-vs-table checks still pass.
+
+## Loss-case rows: final level vs. launch, not value received (2026-10-15)
+
+"Avg value received (% of notional)" = worst level / strike was correct but read as confusing next to
+the strike: different units (notional vs. launch price), and it is above the strike whenever the
+strike is below 100% (e.g. strike 80%, finish at 70% -> 87.5% of notional, because the investor
+receives notional / strike-price shares). Replaced with the worst performer's final level as % of
+its own launch price - same units as the strike, so "strike 80%, avg loss-case finish 66.6%" compares
+directly. "Settled on X" became "worst performer was X". Value received can still be derived:
+final level / strike. Verified on AAPL/MSFT/NVDA RC, strike 80%, 12m: 436 losses, avg 66.6%,
+lowest 44.9%, equal to a plain-loop reimplementation. Table cell now 5,452 pasted characters.
+
+## Loss-case rows removed (2026-10-15)
+
+Removed the loss-case rows (final level of the worst performer, which underlying it was) from the
+table cell, same day they were reworded. The cell is a status calculator - share of launches per
+outcome - and payoff-style figures were extra detail that needed explaining every time. The
+worst-of basket naming and the Settlement row stay. Outcome percentages unchanged; chart lines still
+equal the table's buckets in all 12 cases. Table cell now 4,905 pasted characters.

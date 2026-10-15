@@ -40,8 +40,6 @@ below the cut line has no comments; reasons live here and in DEVLOG.md):
     data. European = maturity day only. FCN/RC have no barrier (strike test alone); BRC barrier hit
     then recovered to >= strike = BREACHED_RECOVERED (cash).
   - Price range A1:E100000 is oversized on purpose; empty rows/columns are dropped.
-  - Loss-case rows: value received per 100% notional = worst performer's maturity level / strike,
-    coupons excluded.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
@@ -130,44 +128,33 @@ def classify(i):
     s0 = px[i]
     j = map_obs(dates[i] + pd.DateOffset(months=TENOR))
     if FREQ is not None and autocalled(i, j):
-        return "AUTOCALL", j is not None, None
+        return "AUTOCALL", j is not None
     live = (px[i:None if j is None else j + 1] / s0).min(axis=1)
     if PRODUCT == "BSF" and AMERICAN and (live >= BARRIER).any():
-        return "KNOCKED_OUT", j is not None, None
+        return "KNOCKED_OUT", j is not None
     if j is None:
-        return "OUTSTANDING", False, None
+        return "OUTSTANDING", False
     path = live if AMERICAN else live[-1:]
     end = path[-1]
     if PRODUCT == "BSF":
         return ("KNOCKED_OUT" if (path >= BARRIER).any() else
-                "UPSIDE_PAID" if end >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), True, None
+                "UPSIDE_PAID" if end >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), True
     breached = PRODUCT != "BRC" or (path <= BARRIER).any()
     if breached and end < STRIKE:
-        return LOSS, True, px[j] / s0
-    return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True, None
+        return LOSS, True
+    return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True
 
 
 rows = [classify(i) for i, d in enumerate(dates) if launch_start <= d <= launch_end]
-every, completed = [o for o, c, _ in rows], [o for o, c, _ in rows if c]
-losses = np.array([perf for o, c, perf in rows if o == LOSS])
+every, completed = [o for o, c in rows], [o for o, c in rows if c]
 
 
 def pct(bucket, of):
     return f"{of.count(bucket) / len(of):.3%}" if of else "n/a"
 
 
-settle = []
-if len(losses):
-    worst = losses.min(axis=1)
-    settle.append((f"{LOSS}: avg value received (% of notional)", f"{(worst / STRIKE).mean():.1%}"))
-    settle.append((f"{LOSS}: worst case (% of notional)", f"{(worst / STRIKE).min():.1%}"))
-    if len(NAMES) > 1:
-        who = losses.argmin(axis=1)
-        settle += [(f"{LOSS}: settled on {n} (% of losses)", f"{(who == k).mean():.1%}") for k, n in enumerate(NAMES)]
-
 pd.DataFrame([("Product", f"{UNDERLYING} {PRODUCT}"), ("Terms", TERMS), ("Launches", len(every))]
              + [(f"{b} %", pct(b, every)) for b in BUCKETS + ["OUTSTANDING"]]
              + [("Completed Launches", len(completed))]
-             + [(f"Completed {b} %", pct(b, completed)) for b in BUCKETS]
-             + settle,
+             + [(f"Completed {b} %", pct(b, completed)) for b in BUCKETS],
              columns=["Metric", "Value"])
