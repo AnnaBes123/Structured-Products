@@ -233,3 +233,46 @@ table cell, same day they were reworded. The cell is a status calculator - share
 outcome - and payoff-style figures were extra detail that needed explaining every time. The
 worst-of basket naming and the Settlement row stay. Outcome percentages unchanged; chart lines still
 equal the table's buckets in all 12 cases. Table cell now 4,905 pasted characters.
+
+## Chart says why a status is missing (2026-10-15)
+
+Reported: other ticked statuses drew, AUTOCALL drew nothing. Not reproducible locally (FCN with
+AUTOCALL ticked draws blue on every test case), so the cause is on the sheet. Rather than guess, the
+chart now reports it:
+
+- Second title line: where the selection came from - "Status grid J1:K12", plus any ticked statuses
+  that don't apply to the Product ("n/a for RC: AUTOCALL"), or "DEFAULT VIEW - no ticked status read
+  from General!J1:K12" when the grid wasn't read.
+- AUTOCALL ticked but no lines: the legend gives the reason - Autocall Frequency blank/0; first
+  observation month (delay + one period) not before maturity (e.g. quarterly on a 3m tenor); or no
+  observation closed at/above the trigger.
+
+Checked each message on a synthetic case; chart lines still equal the table's buckets in all 12
+cases. Chart cell now 7,689 pasted characters (~500 left under Excel's 8,192).
+
+## More forgiving inputs: frequency spellings, status labels (2026-10-15)
+
+- Autocall Frequency (both cells) now also takes "3m", "3 months", "Quarter", "Annually"/"Annual"
+  (12 months) and any spacing/hyphenation ("Semi Annual"). Previously those raised an error and the
+  whole cell failed.
+- Status grid labels (chart) are matched on letters only, so "Auto call", "Auto-Call", "AUTOCALL %"
+  and "Autocalled" all mean AUTOCALL; same for the other statuses. Prompted by AUTOCALL not drawing
+  on the user's FCN sheet while other statuses did - a label the old exact match didn't recognise is
+  the most likely cause (the frequency cell was evidently parsing, or the whole chart would have
+  errored).
+
+Checked: every spelling above maps as intended; label variants resolve; all 12 chart-vs-table checks
+and the diagnostic messages still pass. Pasted sizes: chart 7,871 (~300 under the 8,192 limit),
+table 5,029.
+
+## European BSF knock-outs: normal opacity, "maturity date" in the legend (2026-10-16)
+
+European BSF looked like solid red blocks next to American. Cause: knock-out lines were always drawn
+at alpha 0.5, chosen for American, where many launches knock out on the same day and the lines are
+few (AAPL, 130% barrier, 12m: 1,636 knock-outs on 227 distinct days). Under European every knock-out
+is on its own maturity day, so the lines are nearly one per launch (1,085 on 1,017 days) and 0.5
+merged them into blocks. The strong alpha now applies only to American knock-outs; European uses
+the normal 0.25. The European legend says "maturity date" (that's when the test happens), and the
+day count reads "on N distinct days". Wide European bands are still expected - they are runs of
+consecutive maturity days that all finished above the barrier. 12/12 chart-vs-table checks pass.
+Chart cell now 7,964 pasted characters - about 230 left under Excel's 8,192.

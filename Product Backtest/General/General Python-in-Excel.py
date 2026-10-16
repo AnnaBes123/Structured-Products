@@ -43,6 +43,7 @@ below the cut line has no comments; reasons live here and in DEVLOG.md):
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
+import re
 
 raw = xl("General!G1:H13")
 p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
@@ -67,10 +68,12 @@ def months(label):
 
 
 def frequency(label):
-    s = text(label).replace("-", "").replace(" ", "")
-    named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "SEMIANNUALLY": 6, "SEMIANNUAL": 6}
+    s = re.sub("[^A-Z0-9.]", "", text(label))
+    named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "QUARTER": 3, "SEMIANNUALLY": 6,
+             "SEMIANNUAL": 6, "ANNUALLY": 12, "ANNUAL": 12}
     if s in named:
         return named[s]
+    s = s.replace("MONTHS", "").replace("MONTH", "").rstrip("M")
     if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:
         return None
     return int(float(s))

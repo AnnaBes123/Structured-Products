@@ -44,6 +44,7 @@ below the cut line has no comments; reasons live here and in DEVLOG.md):
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
+import re
 import matplotlib.pyplot as plt
 
 raw = xl("General!G1:H13")
@@ -69,10 +70,12 @@ def months(label):
 
 
 def frequency(label):
-    s = text(label).replace("-", "").replace(" ", "")
-    named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "SEMIANNUALLY": 6, "SEMIANNUAL": 6}
+    s = re.sub("[^A-Z0-9.]", "", text(label))
+    named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "QUARTER": 3, "SEMIANNUALLY": 6,
+             "SEMIANNUAL": 6, "ANNUALLY": 12, "ANNUAL": 12}
     if s in named:
         return named[s]
+    s = s.replace("MONTHS", "").replace("MONTH", "").rstrip("M")
     if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:
         return None
     return int(float(s))
@@ -160,16 +163,19 @@ def wanted():
     except Exception:
         grid = None
     grid = grid if isinstance(grid, pd.DataFrame) else pd.DataFrame()
-    show = set()
+    show, skip = set(), []
     for name, flag in grid.iloc[:, :2].itertuples(index=False) if grid.shape[1] >= 2 else []:
-        key = str(name).strip().upper().replace(" ", "_").replace("-", "_")
-        key = LOSS if key in ("PHYSICAL_DELIVERY", "CASH_SETTLEMENT", "LOSS") else key
-        if str(flag).strip().upper() in ("TRUE", "Y", "YES", "X", "1", "1.0") and key in APPLIES:
-            show.add(key)
-    return [b for b in APPLIES if b in show] or [BAD, "OUTSTANDING"]
+        k = re.sub("[^A-Z]", "", str(name).upper())
+        key = next((b for b in APPLIES if re.sub("[^A-Z]", "", b) in (k, k[:-2])), k)
+        key = LOSS if k in ("PHYSICALDELIVERY", "CASHSETTLEMENT", "LOSS") else key
+        if str(flag).strip().upper() in ("TRUE", "Y", "YES", "X", "1", "1.0"):
+            (show.add(key) if key in APPLIES else skip.append(key))
+    if show:
+        return [b for b in APPLIES if b in show], "Status grid J1:K12" + (f" (n/a for {PRODUCT}: {', '.join(skip)})" if skip else "")
+    return [BAD, "OUTSTANDING"], "DEFAULT VIEW - no ticked status read from General!J1:K12"
 
 
-SHOW = wanted()
+SHOW, NOTE = wanted()
 y = px[:, 0] if px.shape[1] == 1 else (px / px[0]).min(axis=1)
 marks, n = {b: [] for b in SHOW}, 0
 for i, d in enumerate(dates):
@@ -189,11 +195,19 @@ for b in sorted(SHOW, key=lambda b: b != "OUTSTANDING"):
     ds = marks[b]
     days = sorted(set(ds))
     event = b == "KNOCKED_OUT"
+    sparse = event and AMERICAN
     ax.vlines(days, 0, 1, transform=ax.get_xaxis_transform(), colors=COLORS[b], lw=0.5,
-              alpha=(0.5 if event else 0.25) if b == BAD else (0.35 if event else 0.12))
-    ax.plot([], [], color=COLORS[b], label=f"{b}: {'knock-out date' if event else 'launch date'} "
-                                           f"({len(ds)} of {n} launches" + (f", {len(days)} days)" if event else ")"))
-ax.set(title=f"{UNDERLYING} {PRODUCT} - {TERMS}",
+              alpha=(0.5 if sparse else 0.25) if b == BAD else (0.35 if sparse else 0.12))
+    if b == "AUTOCALL" and (FREQ is None or not ds):
+        why = ("Autocall Frequency is blank/0" if FREQ is None else
+               f"first observation month {DELAY + (FREQ or 0)} is not before the {TENOR}m maturity"
+               if DELAY + (FREQ or 0) >= TENOR else f"no observation closed >= trigger {TRIGGER:.0%}")
+        ax.plot([], [], color=COLORS[b], label=f"AUTOCALL: none - {why}")
+        continue
+    when = ("knock-out date" if AMERICAN else "maturity date") if event else "launch date"
+    ax.plot([], [], color=COLORS[b], label=f"{b}: {when} ({len(ds)} of {n} launches"
+                                           + (f", on {len(days)} distinct days)" if event else ")"))
+ax.set(title=f"{UNDERLYING} {PRODUCT} - {TERMS}\n{NOTE}",
        ylabel="Price" if px.shape[1] == 1 else "Performance vs. first date")
 if px.shape[1] > 1:
     ax.set_yscale("log")
