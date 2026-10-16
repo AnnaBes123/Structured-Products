@@ -2,38 +2,41 @@
 Body of ONE Excel =PY() cell: rolling backtest of any covered product (FCN / RC / BRC / BSF).
 Paste everything below the ---8<--- line into the cell, then Ctrl+Shift+Alt+M (Output As > Excel Value).
 
-Sheet "General":
-  A:E  price pull, header row 1: "Date", then one column per ticker - up to 4 (unused columns blank).
+Layout (all on the sheet this cell sits on - no sheet name in the ranges):
+  A:P  price pull, header row 1: "Date", then one column per ticker - up to 15 (unused columns blank).
        2+ tickers = worst-of: every test (autocall, barrier, strike) looks at the worst performer vs. its
        own launch level, and a loss is settled on that worst performer.
-  G:H  params, value in H, rows 1-13 in exactly this order (blank = not used by this product). Only the
-       row order matters - the G labels are yours to word per product (formulas: see DEVLOG.md):
-         Ticker                      AMD          (display name only; blank -> the price headers, e.g. AAPL/MSFT)
-         Product                     FCN          (FCN, RC, BRC or BSF)
-         Strike                      90%          (% of launch level; all three levels: enter as a
-         Barrier                     70%           percentage - 130%, not 1.3. BRC: down-and-in; BSF: up-and-out)
-         Barrier Monitoring          European     (or American = every trading day)
-         Autocall Trigger            100%         (FCN only)
-         Autocall Frequency          Quarterly    (FCN only: Daily, Monthly, Bi-Monthly = every 2 months,
-                                                   Quarterly, Semi-Annually; blank or 0 = no autocall)
-         Autocall Delay to First Observation (Months)
-                                     No delay     (FCN only: No delay / 0, or whole months added before the
-                                                   first observation - quarterly + 3 -> first observation month 6)
-         Tenor Months                12
-         Launch Start                2001-01-02
-         Launch End                  (blank -> last price date)
-         Max Gap Days                10
-         Settlement                  Physical     (or Cash; blank = Physical. FCN/RC/BRC loss case only)
+  R3:S15  params, value in S, one per row in exactly this order (blank = not used by this product). Only
+       the row order matters - the R labels are yours to word (formulas: see DEVLOG.md):
+         R3   Ticker                      AMD          (display name only; blank -> the price headers, e.g. AAPL/MSFT)
+         R4   Product                     FCN          (FCN, RC, BRC or BSF)
+         R5   Strike                      90%          (% of launch level; 130, "130%" and 1.3 all work)
+         R6   Barrier                     70%          (BRC: down-and-in; BSF: up-and-out)
+         R7   Barrier Monitoring          European     (or American = every trading day)
+         R8   Autocall Trigger            100%         (FCN only)
+         R9   Autocall Frequency          Quarterly    (FCN only: Daily, Monthly, Bi-Monthly = every 2 months,
+                                                        Quarterly, Semi-Annually, Annually, or a number of
+                                                        months; blank or 0 = no autocall)
+         R10  Autocall Delay (Months)     No delay     (FCN only: No delay / 0, or whole months added before the
+                                                        first observation - quarterly + 3 -> first observation month 6)
+         R11  Tenor Months                12
+         R12  Launch Start                2001-01-02   (blank -> first price date)
+         R13  Launch End                  (blank -> last price date)
+         R14  Max Gap Days                10
+         R15  Settlement                  Physical     (or Cash; blank = Physical. FCN/RC/BRC loss case only)
 
 Code notes (kept out of the pasted part - Excel caps a =PY() cell at 8,192 characters, so the code
 below the cut line has no comments; reasons live here and in DEVLOG.md):
-  - Params are read by row position in G1:H13, not by label, so the G labels can be reworded freely.
-    p.get() lets a sheet that stops at row 12 (no Settlement row) still work.
+  - Params are read by row position in R3:S15, not by label, so the R labels can be reworded freely.
+    p.get() lets a sheet that stops at row 14 (no Settlement row) still work.
+  - Ranges have no sheet prefix: the cell reads the sheet it sits on, so it must be on the same sheet
+    as the prices and params (any sheet name works).
   - level(): Excel's 130% arrives as 1.3; a typed 130 or "130%" also works - anything above 5 is read
     as percentage points (no real strike/barrier is above 500%).
   - frequency(): named frequencies, or a bare number = months; blank/0 = no autocall. First
-    observation = delay + one period, so never the launch day. Daily is stored as the word "DAILY" (never 0 - 0 means no
-    autocall) = every trading day after the delay. An observation must fall strictly before the maturity day (that day is the strike test).
+    observation = delay + one period, so never the launch day. Daily is stored as the word "DAILY"
+    (never 0 - 0 means no autocall) = every trading day after the delay. An observation must fall
+    strictly before the maturity day (that day is the strike test).
   - Price data is cleaned before use: dates may be real dates, text or Excel serial numbers; non-numeric
     prices (#N/A, text) and rows with any blank price are dropped. Blank Launch Start = first price date.
     An unknown Product raises a plain-English error instead of a KeyError.
@@ -42,75 +45,77 @@ below the cut line has no comments; reasons live here and in DEVLOG.md):
   - classify(): a BSF American knock-out is final the day it's hit, even before maturity is in the
     data. European = maturity day only. FCN/RC have no barrier (strike test alone); BRC barrier hit
     then recovered to >= strike = BREACHED_RECOVERED (cash).
-  - Price range A1:E100000 is oversized on purpose; empty rows/columns are dropped.
+  - Price range A1:P100000 is oversized on purpose; empty rows/columns are dropped.
+  - Strings in the pasted code use single quotes: Excel stores each double quote as two characters
+    toward the 8,192 limit.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 import re
 
-raw = xl("General!G1:H13")
-p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "Autocall Trigger",
-              "Autocall Frequency", "Autocall Delay", "Tenor Months", "Launch Start",
-              "Launch End", "Max Gap Days", "Settlement"], raw.iloc[:, 1]))
+raw = xl('R3:S15')
+p = dict(zip(['Ticker', 'Product', 'Strike', 'Barrier', 'Barrier Monitoring', 'Autocall Trigger',
+    'Autocall Frequency', 'Autocall Delay', 'Tenor Months', 'Launch Start',
+    'Launch End', 'Max Gap Days', 'Settlement'], raw.iloc[:, 1]))
 
 def text(label):
     v = p.get(label)
-    return "" if v is None or pd.isna(v) else str(v).strip().upper()
+    return '' if v is None or pd.isna(v) else str(v).strip().upper()
 
 def level(label):
     s = text(label)
-    x = float(s.rstrip("%") or 0)
-    return x / 100 if s.endswith("%") or x > 5 else x
+    x = float(s.rstrip('%') or 0)
+    return x / 100 if s.endswith('%') or x > 5 else x
 
 def months(label):
-    s = text(label).replace("MONTHS", "").replace("M", "").strip()
-    return 0 if not s or s.startswith("NO") else int(float(s))
+    s = text(label).replace('MONTHS', '').replace('M', '').strip()
+    return 0 if not s or s.startswith('NO') else int(float(s))
 
 def frequency(label):
-    s = re.sub("[^A-Z0-9.]", "", text(label))
-    named = {"DAILY": "DAILY", "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "QUARTER": 3, "SEMIANNUALLY": 6,
-             "SEMIANNUAL": 6, "ANNUALLY": 12, "ANNUAL": 12}
+    s = re.sub('[^A-Z0-9.]', '', text(label))
+    named = {'DAILY': 'DAILY', 'MONTHLY': 1, 'BIMONTHLY': 2, 'QUARTERLY': 3, 'QUARTER': 3, 'SEMIANNUALLY': 6,
+        'SEMIANNUAL': 6, 'ANNUALLY': 12, 'ANNUAL': 12}
     if s in named:
         return named[s]
-    s = s.replace("MONTHS", "").replace("MONTH", "").rstrip("M")
-    if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0:
+    s = s.replace('MONTHS', '').replace('MONTH', '').rstrip('M')
+    if s in ('', 'NONE', 'NO', 'NOAUTOCALL') or float(s) == 0:
         return None
     return int(float(s))
 
-PRODUCT = text("Product")
-if PRODUCT not in ("FCN", "RC", "BRC", "BSF"):
-    raise ValueError(f"Product (H2) must be FCN, RC, BRC or BSF, not {PRODUCT}")
-STRIKE, BARRIER, TRIGGER = level("Strike"), level("Barrier"), level("Autocall Trigger")
-AMERICAN = text("Barrier Monitoring").startswith("A")
-LOSS = "CASH_SETTLEMENT" if text("Settlement").startswith("C") else "PHYSICAL_DELIVERY"
-TENOR, DELAY, MAX_GAP = months("Tenor Months"), months("Autocall Delay"), months("Max Gap Days")
-FREQ = frequency("Autocall Frequency") if PRODUCT == "FCN" else None
+PRODUCT = text('Product')
+if PRODUCT not in ('FCN', 'RC', 'BRC', 'BSF'):
+    raise ValueError(f'Product (S2) must be FCN, RC, BRC or BSF, not {PRODUCT}')
+STRIKE, BARRIER, TRIGGER = level('Strike'), level('Barrier'), level('Autocall Trigger')
+AMERICAN = text('Barrier Monitoring').startswith('A')
+LOSS = 'CASH_SETTLEMENT' if text('Settlement').startswith('C') else 'PHYSICAL_DELIVERY'
+TENOR, DELAY, MAX_GAP = months('Tenor Months'), months('Autocall Delay'), months('Max Gap Days')
+FREQ = frequency('Autocall Frequency') if PRODUCT == 'FCN' else None
 OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if isinstance(FREQ, int) else []
-BUCKETS = {"FCN": ["AUTOCALL", "MATURITY_CASH", LOSS],
-           "RC": ["MATURITY_CASH", LOSS],
-           "BRC": ["MATURITY_CASH", "BREACHED_RECOVERED", LOSS],
-           "BSF": ["UPSIDE_PAID", "NO_UPSIDE_BELOW_STRIKE", "KNOCKED_OUT"]}[PRODUCT]
+BUCKETS = {'FCN': ['AUTOCALL', 'MATURITY_CASH', LOSS],
+    'RC': ['MATURITY_CASH', LOSS],
+    'BRC': ['MATURITY_CASH', 'BREACHED_RECOVERED', LOSS],
+    'BSF': ['UPSIDE_PAID', 'NO_UPSIDE_BELOW_STRIKE', 'KNOCKED_OUT']}[PRODUCT]
 
-MODE = "American" if AMERICAN else "European"
-FREQ_NAME = {"DAILY": "daily", 1: "monthly", 2: "bi-monthly", 3: "quarterly", 6: "semi-annually", 12: "annually"}.get(FREQ, f"every {FREQ}m")
-TERMS = f"strike {STRIKE:.0%}" + {
-    "FCN": ", no autocall" if FREQ is None else
-           f", autocall {TRIGGER:.0%} {FREQ_NAME}" + (f" after {DELAY}m delay" if DELAY else ""),
-    "RC": "",
-    "BRC": f", knock-in barrier {BARRIER:.0%} {MODE}",
-    "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m" + (
-    "" if PRODUCT == "BSF" else ", cash-settled" if LOSS == "CASH_SETTLEMENT" else ", physically settled")
+MODE = 'American' if AMERICAN else 'European'
+FREQ_NAME = {'DAILY': 'daily', 1: 'monthly', 2: 'bi-monthly', 3: 'quarterly', 6: 'semi-annually', 12: 'annually'}.get(FREQ, f'every {FREQ}m')
+TERMS = f'strike {STRIKE:.0%}' + {
+    'FCN': ', no autocall' if FREQ is None else
+    f', autocall {TRIGGER:.0%} {FREQ_NAME}' + (f' after {DELAY}m delay' if DELAY else ''),
+    'RC': '',
+    'BRC': f', knock-in barrier {BARRIER:.0%} {MODE}',
+    'BSF': f', knock-out barrier {BARRIER:.0%} {MODE}'}[PRODUCT] + f', tenor {TENOR}m' + (
+    '' if PRODUCT == 'BSF' else ', cash-settled' if LOSS == 'CASH_SETTLEMENT' else ', physically settled')
 
-d = xl("General!A1:E100000", headers=True)
+d = xl('A1:P100000', headers=True)
 c = d.iloc[:, 0]
-c = pd.to_datetime(c, unit="D", origin="1899-12-30") if c.dtype.kind in "if" else pd.to_datetime(c, errors="coerce")
-prices_df = d.iloc[:, 1:].apply(pd.to_numeric, errors="coerce").set_index(c).dropna(axis=1, how="all").dropna()
+c = pd.to_datetime(c, unit='D', origin='1899-12-30') if c.dtype.kind in 'if' else pd.to_datetime(c, errors='coerce')
+prices_df = d.iloc[:, 1:].apply(pd.to_numeric, errors='coerce').set_index(c).dropna(axis=1, how='all').dropna()
 prices_df = prices_df[prices_df.index.notna()].sort_index()
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
 NAMES = [str(c).strip() for c in prices_df.columns]
-UNDERLYING = (text("Ticker") and str(p["Ticker"]).strip() or "/".join(NAMES)) + (" worst-of" if len(NAMES) > 1 else "")
-launch_start = dates[0] if pd.isna(p["Launch Start"]) else pd.Timestamp(p["Launch Start"])
-launch_end = dates[-1] if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
+UNDERLYING = (text('Ticker') and str(p['Ticker']).strip() or '/'.join(NAMES)) + (' worst-of' if len(NAMES) > 1 else '')
+launch_start = dates[0] if pd.isna(p['Launch Start']) else pd.Timestamp(p['Launch Start'])
+launch_end = dates[-1] if pd.isna(p['Launch End']) else pd.Timestamp(p['Launch End'])
 
 def map_obs(target):
     pos = int(dates.searchsorted(target))
@@ -118,8 +123,8 @@ def map_obs(target):
 
 def autocalled(i, j):
     s0, end = px[i], len(dates) if j is None else j
-    if FREQ == "DAILY":
-        first = int(dates.searchsorted(dates[i] + pd.DateOffset(months=DELAY), side="right"))
+    if FREQ == 'DAILY':
+        first = int(dates.searchsorted(dates[i] + pd.DateOffset(months=DELAY), side='right'))
         return bool(((px[first:end] / s0).min(axis=1) >= TRIGGER).any())
     for m in OBS_MONTHS:
         k = map_obs(dates[i] + pd.DateOffset(months=m))
@@ -131,30 +136,30 @@ def classify(i):
     s0 = px[i]
     j = map_obs(dates[i] + pd.DateOffset(months=TENOR))
     if FREQ is not None and autocalled(i, j):
-        return "AUTOCALL", j is not None
+        return 'AUTOCALL', j is not None
     live = (px[i:None if j is None else j + 1] / s0).min(axis=1)
-    if PRODUCT == "BSF" and AMERICAN and (live >= BARRIER).any():
-        return "KNOCKED_OUT", j is not None
+    if PRODUCT == 'BSF' and AMERICAN and (live >= BARRIER).any():
+        return 'KNOCKED_OUT', j is not None
     if j is None:
-        return "OUTSTANDING", False
+        return 'OUTSTANDING', False
     path = live if AMERICAN else live[-1:]
     end = path[-1]
-    if PRODUCT == "BSF":
-        return ("KNOCKED_OUT" if (path >= BARRIER).any() else
-                "UPSIDE_PAID" if end >= STRIKE else "NO_UPSIDE_BELOW_STRIKE"), True
-    breached = PRODUCT != "BRC" or (path <= BARRIER).any()
+    if PRODUCT == 'BSF':
+        return ('KNOCKED_OUT' if (path >= BARRIER).any() else
+            'UPSIDE_PAID' if end >= STRIKE else 'NO_UPSIDE_BELOW_STRIKE'), True
+    breached = PRODUCT != 'BRC' or (path <= BARRIER).any()
     if breached and end < STRIKE:
         return LOSS, True
-    return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True
+    return ('BREACHED_RECOVERED' if PRODUCT == 'BRC' and breached else 'MATURITY_CASH'), True
 
 rows = [classify(i) for i, d in enumerate(dates) if launch_start <= d <= launch_end]
 every, completed = [o for o, c in rows], [o for o, c in rows if c]
 
 def pct(bucket, of):
-    return f"{of.count(bucket) / len(of):.3%}" if of else "n/a"
+    return f'{of.count(bucket) / len(of):.3%}' if of else 'n/a'
 
-pd.DataFrame([("Product", f"{UNDERLYING} {PRODUCT}"), ("Terms", TERMS), ("Launches", len(every))]
-             + [(f"{b} %", pct(b, every)) for b in BUCKETS + ["OUTSTANDING"]]
-             + [("Completed Launches", len(completed))]
-             + [(f"Completed {b} %", pct(b, completed)) for b in BUCKETS],
-             columns=["Metric", "Value"])
+pd.DataFrame([('Product', f'{UNDERLYING} {PRODUCT}'), ('Terms', TERMS), ('Launches', len(every))]
+    + [(f'{b} %', pct(b, every)) for b in BUCKETS + ['OUTSTANDING']]
+    + [('Completed Launches', len(completed))]
+    + [(f'Completed {b} %', pct(b, completed)) for b in BUCKETS],
+    columns=['Metric', 'Value'])

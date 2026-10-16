@@ -319,3 +319,43 @@ General table; annual at 12/24/36m vs a plain loop; blank Launch Start, text dat
 "#N/A" rows and blank columns each give the same outcomes as a clean sheet in both cells. Charts
 rendered and inspected for FCN and BRC (single), RC and BSF (4-stock basket), default view and a
 mistyped label.
+
+## Single quotes in the pasted code: Excel's stored formula length (2026-10-16)
+
+After the review pass, Excel refused to save the chart cell ("an error occurred trying to save
+changes") although its visible length (7,924) was under 8,192. Likely cause: Excel stores a Python
+cell inside a formula string, where each double quote is stored escaped as two characters - the
+chart had 386 of them, so its stored length was ~8,310, over the limit, while the editor showed less.
+The review fixes added quotes, which is why it broke only then. All strings in the pasted code of
+both General cells and the FCN cell now use single quotes (Python treats them identically); only
+the few strings that themselves contain a single quote keep double quotes. Syntax trees are
+identical before/after, so behaviour is unchanged. Worst-case stored length (doubled quotes +
+two-character line breaks): chart 8,090, table 5,578, FCN 4,884. This is an inference from the
+symptoms, not a documented Excel rule - if a save still fails, the chart cell needs trimming further.
+
+## Up to 15 underlyings; new sheet layout, no sheet prefix (2026-10-16)
+
+The 4-ticker cap came from the layout: prices in A:E, params starting in G. New layout, matching the
+user's sheet:
+
+- Prices A:P (Date + up to 15 tickers), read as `xl('A1:P100000')`.
+- Params R3:S15, by row position in the documented order (R3 Ticker ... R14 Max Gap Days, R15
+  Settlement). The user's table is R3:S14; R15 = Settlement is optional (blank = Physical).
+- Status grid R23:S30 (chart only).
+- No sheet prefix in any range: the cells read the sheet they sit on, so the sheet can have any name
+  but prices, params, grid and both cells must be on the same sheet. (Also saves characters.)
+- Label wording in the docs: "Autocall Delay (Months)". Labels are still free text (read by row).
+- Tickers 5-15 get colours from matplotlib's tab20b palette after the 4 fixed ones; the legend
+  switches to 4 columns above 4 tickers. With 15 names some colours are similar - the legend and the
+  black worst-of line are the reliable reads.
+
+Label formulas from earlier entries referenced $H$2 for Product; with the new layout Product is S4,
+so use $S$4 in them.
+
+Also: strings in the pasted code switched to single quotes (Excel stores each double quote as two
+characters toward 8,192), and continuation lines re-indented minimally - syntax trees unchanged.
+Sizes, worst case (doubled double quotes + two-character line breaks): chart 8,040, table 5,469.
+
+Verified: 15-ticker RC basket (AAPL ... INTC, strike 70%, 12m) equals a plain-loop worst-of
+reimplementation on every launch and chart lines equal the table; 12/12 chart-vs-table checks; grid
+label and messy-data checks unchanged; the test stub now fails if any range carries a sheet prefix.
