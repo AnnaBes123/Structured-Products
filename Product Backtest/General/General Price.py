@@ -43,7 +43,10 @@ below the cut line has no comments; reasons live here and in DEVLOG.md):
     then recovered to >= strike = BREACHED_RECOVERED (cash).
   - Strings in the pasted code use single quotes: Excel stores each double quote as two characters
     toward the 8,192 limit.
-  - Chart: the status grid is read with a literal xl('R23:S30') because Excel tracks a cell's
+  - Status colours: V23:W30 = status name | colour (name like 'orange' or hex '#1E90FF'), read in the
+    same xl('R23:W30') call as the Show grid. They override the COLORS defaults for that run only - the
+    code is never edited; blank/invalid -> default.
+  - Chart: the status grid is read with a literal xl('R23:W30') because Excel tracks a cell's
     dependencies from the xl("...") text. Grey (outstanding) is drawn first so outcomes sit on top;
     knock-out days are de-duplicated (many launches share one). Red = the bad outcome only (loss, or
     BSF's knock-out - never on the same chart) and drawn stronger. Basket y-axis is log so one big
@@ -53,6 +56,7 @@ below the cut line has no comments; reasons live here and in DEVLOG.md):
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
 import re
 import matplotlib.pyplot as plt
+import matplotlib.colors as mc
 
 raw = xl('R3:S15')
 p = dict(zip(['Ticker', 'Product', 'Strike', 'Barrier', 'Barrier Monitoring', 'Autocall Trigger',
@@ -85,7 +89,7 @@ def frequency(label):
 
 PRODUCT = text('Product')
 if PRODUCT not in ('FCN', 'RC', 'BRC', 'BSF'):
-    raise ValueError(f'Product (S2) must be FCN, RC, BRC or BSF, not {PRODUCT}')
+    raise ValueError(f'Product (S4) must be FCN, RC, BRC or BSF, not {PRODUCT}')
 STRIKE, BARRIER, TRIGGER = level('Strike'), level('Barrier'), level('Autocall Trigger')
 AMERICAN = text('Barrier Monitoring').startswith('A')
 LOSS = 'CASH_SETTLEMENT' if text('Settlement').startswith('C') else 'PHYSICAL_DELIVERY'
@@ -109,6 +113,8 @@ c = d.iloc[:, 0]
 c = pd.to_datetime(c, unit='D', origin='1899-12-30') if c.dtype.kind in 'if' else pd.to_datetime(c, errors='coerce')
 prices_df = d.iloc[:, 1:].apply(pd.to_numeric, errors='coerce').set_index(c).dropna(axis=1, how='all').dropna()
 prices_df = prices_df[prices_df.index.notna()].sort_index()
+if len(prices_df) < 2:
+    raise ValueError('No usable prices: dates in A, prices in B:P')
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
 NAMES = [str(c).strip() for c in prices_df.columns]
 UNDERLYING = (text('Ticker') and str(p['Ticker']).strip() or '/'.join(NAMES)) + (' worst-of' if len(NAMES) > 1 else '')
@@ -161,19 +167,20 @@ APPLIES = {'FCN': ['AUTOCALL', 'MATURITY_CASH', LOSS], 'RC': ['MATURITY_CASH', L
 
 def wanted():
     try:
-        g = xl('R23:S30').iloc[:, :2].values.tolist()
+        g = xl('R23:W30').values.tolist()
     except Exception:
         g = []
     key = {re.sub('[^A-Z]', '', b): b for b in COLORS} | {'PHYSICALDELIVERY': LOSS, 'CASHSETTLEMENT': LOSS}
-    show, skip = set(), []
-    for name, flag in g:
-        k = re.sub('[^A-Z]', '', str(name).upper())
-        k = key.get(k, key.get(k[:-2], k))
-        if str(flag).strip().upper() in ('TRUE', 'Y', 'YES', 'X', '1', '1.0'):
-            show.add(k) if k in APPLIES else k in COLORS or skip.append(str(name))
+    show = set()
+    for r in g:
+        k, v = (key.get(t, key.get(t[:-2])) for t in (re.sub('[^A-Z]', '', str(x).upper()) for x in (r[0], r[4])))
+        if k in APPLIES and str(r[1]).strip().upper() in ('TRUE', 'Y', 'YES', 'X', '1', '1.0'):
+            show.add(k)
+        if v and mc.is_color_like(str(r[5]).strip()):
+            COLORS[v] = str(r[5]).strip()
     if show:
-        return [b for b in APPLIES if b in show], f"\nNot a status - check R23:S30: {', '.join(skip)}" if skip else ''
-    return [BAD, 'OUTSTANDING'], "\nDefault view - no status ticked in R23:S30"
+        return [b for b in APPLIES if b in show], ''
+    return [BAD, 'OUTSTANDING'], '\nDefault view - nothing ticked in R23:S30'
 
 SHOW, NOTE = wanted()
 y = px[:, 0] if px.shape[1] == 1 else (px / px[0]).min(axis=1)

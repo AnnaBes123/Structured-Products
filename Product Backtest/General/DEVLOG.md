@@ -359,3 +359,41 @@ Sizes, worst case (doubled double quotes + two-character line breaks): chart 8,0
 Verified: 15-ticker RC basket (AAPL ... INTC, strike 70%, 12m) equals a plain-loop worst-of
 reimplementation on every launch and chart lines equal the table; 12/12 chart-vs-table checks; grid
 label and messy-data checks unchanged; the test stub now fails if any range carries a sheet prefix.
+
+## Clear error when no price rows survive cleaning (2026-10-16)
+
+Reported: an "index" error in both cells after the layout change. Could not reproduce (blank and
+repeated column headers, as Excel returns them for empty columns, run fine). In this code an index
+error almost always means the price block was empty after cleaning - dates not in column A, prices
+not in B:P, or a mostly empty ticker column removing every row - and the first lookup of a date then
+fails. Both cells now stop with "No usable prices: dates in A, prices in B:P" instead. Chart size
+(worst case) 8,124.
+
+## Decided against: colours picked from the sheet (2026-10-16)
+
+Considered letting the sheet set the chart colours (status colours from the V23:W30 legend, and/or
+ticker colours). Built and tested the status version (colour names in W23:W30), then reverted it.
+Reasons:
+- Python in Excel reads cell values, never fills, so a legend coloured by hand can't drive the chart;
+  the user would have to type colour names, and the legend would still need colouring by hand.
+- The chart cell is at the 8,192 limit (~8,126 worst case). The feature only fit by removing the
+  chart's own Product and empty-price checks - trading clear errors for decoration.
+- Ticker colours would add up to 15 more inputs for something the legend already answers.
+Instead: colours stay fixed in the COLORS / TICKER_COLORS lines (one place to edit), and the sheet
+legend is coloured once with the same hex values. Also fixed: Product error message now says S4
+(the new layout), not S2.
+
+## Reversed: status colours editable from the V23:W30 legend (2026-10-16)
+
+Reverses the "decided against" entry above, at the user's request once it was clear that sheet
+colours only override the defaults at run time (the pasted code is never edited). The chart reads
+R23:W30 in one xl() call: R/S = status | Show (as before), V/W = status | colour. Any matplotlib
+colour name ("orange", "Red") or hex ("#1E90FF") in W overrides that status's default in COLORS;
+blank or anything that isn't a colour (e.g. a description) keeps the default. Python can't read cell
+fills, so the colour must be typed as text in W.
+
+To fit the 8,192 limit with the Product and empty-price checks kept, the "Unknown status" second
+title line was dropped (a mistyped Show label is now silently ignored). "Autocalled"-style labels
+still resolve. Ticker colours stay fixed (TICKER_COLORS) - not worth 15 more inputs.
+Verified: overrides applied (orange / #6A5ACD / black, blank -> default grey) and rendered; label
+variants; 12/12 chart-vs-table checks. Chart worst-case length 8,137.

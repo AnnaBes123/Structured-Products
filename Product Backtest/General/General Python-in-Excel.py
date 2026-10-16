@@ -84,7 +84,7 @@ def frequency(label):
 
 PRODUCT = text('Product')
 if PRODUCT not in ('FCN', 'RC', 'BRC', 'BSF'):
-    raise ValueError(f'Product (S2) must be FCN, RC, BRC or BSF, not {PRODUCT}')
+    raise ValueError(f'Product (S4) must be FCN, RC, BRC or BSF, not {PRODUCT}')
 STRIKE, BARRIER, TRIGGER = level('Strike'), level('Barrier'), level('Autocall Trigger')
 AMERICAN = text('Barrier Monitoring').startswith('A')
 LOSS = 'CASH_SETTLEMENT' if text('Settlement').startswith('C') else 'PHYSICAL_DELIVERY'
@@ -111,6 +111,8 @@ c = d.iloc[:, 0]
 c = pd.to_datetime(c, unit='D', origin='1899-12-30') if c.dtype.kind in 'if' else pd.to_datetime(c, errors='coerce')
 prices_df = d.iloc[:, 1:].apply(pd.to_numeric, errors='coerce').set_index(c).dropna(axis=1, how='all').dropna()
 prices_df = prices_df[prices_df.index.notna()].sort_index()
+if len(prices_df) < 2:
+    raise ValueError('No usable prices: dates in A, prices in B:P')
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
 NAMES = [str(c).strip() for c in prices_df.columns]
 UNDERLYING = (text('Ticker') and str(p['Ticker']).strip() or '/'.join(NAMES)) + (' worst-of' if len(NAMES) > 1 else '')
