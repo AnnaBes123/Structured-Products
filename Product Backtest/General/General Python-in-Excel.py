@@ -32,8 +32,11 @@ below the cut line has no comments; reasons live here and in DEVLOG.md):
   - level(): Excel's 130% arrives as 1.3; a typed 130 or "130%" also works - anything above 5 is read
     as percentage points (no real strike/barrier is above 500%).
   - frequency(): named frequencies, or a bare number = months; blank/0 = no autocall. First
-    observation = delay + one period, so never the launch day. Daily = every trading day after the
-    delay. An observation must fall strictly before the maturity day (that day is the strike test).
+    observation = delay + one period, so never the launch day. Daily is stored as the word "DAILY" (never 0 - 0 means no
+    autocall) = every trading day after the delay. An observation must fall strictly before the maturity day (that day is the strike test).
+  - Price data is cleaned before use: dates may be real dates, text or Excel serial numbers; non-numeric
+    prices (#N/A, text) and rows with any blank price are dropped. Blank Launch Start = first price date.
+    An unknown Product raises a plain-English error instead of a KeyError.
   - 2+ price columns = worst-of: every test uses the worst performer vs. its own launch level, and a
     loss is settled on it (its shares, or their value in cash - same value, so Settlement only renames).
   - classify(): a BSF American knock-out is final the day it's hit, even before maturity is in the
@@ -50,26 +53,22 @@ p = dict(zip(["Ticker", "Product", "Strike", "Barrier", "Barrier Monitoring", "A
               "Autocall Frequency", "Autocall Delay", "Tenor Months", "Launch Start",
               "Launch End", "Max Gap Days", "Settlement"], raw.iloc[:, 1]))
 
-
 def text(label):
     v = p.get(label)
     return "" if v is None or pd.isna(v) else str(v).strip().upper()
-
 
 def level(label):
     s = text(label)
     x = float(s.rstrip("%") or 0)
     return x / 100 if s.endswith("%") or x > 5 else x
 
-
 def months(label):
     s = text(label).replace("MONTHS", "").replace("M", "").strip()
     return 0 if not s or s.startswith("NO") else int(float(s))
 
-
 def frequency(label):
     s = re.sub("[^A-Z0-9.]", "", text(label))
-    named = {"DAILY": 0, "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "QUARTER": 3, "SEMIANNUALLY": 6,
+    named = {"DAILY": "DAILY", "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "QUARTER": 3, "SEMIANNUALLY": 6,
              "SEMIANNUAL": 6, "ANNUALLY": 12, "ANNUAL": 12}
     if s in named:
         return named[s]
@@ -78,21 +77,22 @@ def frequency(label):
         return None
     return int(float(s))
 
-
 PRODUCT = text("Product")
+if PRODUCT not in ("FCN", "RC", "BRC", "BSF"):
+    raise ValueError(f"Product (H2) must be FCN, RC, BRC or BSF, not {PRODUCT}")
 STRIKE, BARRIER, TRIGGER = level("Strike"), level("Barrier"), level("Autocall Trigger")
 AMERICAN = text("Barrier Monitoring").startswith("A")
 LOSS = "CASH_SETTLEMENT" if text("Settlement").startswith("C") else "PHYSICAL_DELIVERY"
 TENOR, DELAY, MAX_GAP = months("Tenor Months"), months("Autocall Delay"), months("Max Gap Days")
 FREQ = frequency("Autocall Frequency") if PRODUCT == "FCN" else None
-OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if FREQ else []
+OBS_MONTHS = range(DELAY + FREQ, TENOR, FREQ) if isinstance(FREQ, int) else []
 BUCKETS = {"FCN": ["AUTOCALL", "MATURITY_CASH", LOSS],
            "RC": ["MATURITY_CASH", LOSS],
            "BRC": ["MATURITY_CASH", "BREACHED_RECOVERED", LOSS],
            "BSF": ["UPSIDE_PAID", "NO_UPSIDE_BELOW_STRIKE", "KNOCKED_OUT"]}[PRODUCT]
 
 MODE = "American" if AMERICAN else "European"
-FREQ_NAME = {0: "daily", 1: "monthly", 2: "bi-monthly", 3: "quarterly", 6: "semi-annually"}.get(FREQ, f"every {FREQ}m")
+FREQ_NAME = {"DAILY": "daily", 1: "monthly", 2: "bi-monthly", 3: "quarterly", 6: "semi-annually", 12: "annually"}.get(FREQ, f"every {FREQ}m")
 TERMS = f"strike {STRIKE:.0%}" + {
     "FCN": ", no autocall" if FREQ is None else
            f", autocall {TRIGGER:.0%} {FREQ_NAME}" + (f" after {DELAY}m delay" if DELAY else ""),
@@ -101,23 +101,24 @@ TERMS = f"strike {STRIKE:.0%}" + {
     "BSF": f", knock-out barrier {BARRIER:.0%} {MODE}"}[PRODUCT] + f", tenor {TENOR}m" + (
     "" if PRODUCT == "BSF" else ", cash-settled" if LOSS == "CASH_SETTLEMENT" else ", physically settled")
 
-prices_df = xl("General!A1:E100000", headers=True).dropna(axis=1, how="all").dropna()
-prices_df = prices_df.set_index(prices_df.columns[0]).sort_index()
+d = xl("General!A1:E100000", headers=True)
+c = d.iloc[:, 0]
+c = pd.to_datetime(c, unit="D", origin="1899-12-30") if c.dtype.kind in "if" else pd.to_datetime(c, errors="coerce")
+prices_df = d.iloc[:, 1:].apply(pd.to_numeric, errors="coerce").set_index(c).dropna(axis=1, how="all").dropna()
+prices_df = prices_df[prices_df.index.notna()].sort_index()
 dates, px = prices_df.index, prices_df.to_numpy(dtype=float)
 NAMES = [str(c).strip() for c in prices_df.columns]
-UNDERLYING = (text("Ticker") or "/".join(NAMES)) + (" worst-of" if len(NAMES) > 1 else "")
-launch_start = pd.Timestamp(p["Launch Start"])
+UNDERLYING = (text("Ticker") and str(p["Ticker"]).strip() or "/".join(NAMES)) + (" worst-of" if len(NAMES) > 1 else "")
+launch_start = dates[0] if pd.isna(p["Launch Start"]) else pd.Timestamp(p["Launch Start"])
 launch_end = dates[-1] if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
-
 
 def map_obs(target):
     pos = int(dates.searchsorted(target))
     return None if pos >= len(dates) or (dates[pos] - target).days > MAX_GAP else pos
 
-
 def autocalled(i, j):
     s0, end = px[i], len(dates) if j is None else j
-    if FREQ == 0:
+    if FREQ == "DAILY":
         first = int(dates.searchsorted(dates[i] + pd.DateOffset(months=DELAY), side="right"))
         return bool(((px[first:end] / s0).min(axis=1) >= TRIGGER).any())
     for m in OBS_MONTHS:
@@ -125,7 +126,6 @@ def autocalled(i, j):
         if k is not None and i < k < end and (px[k] / s0).min() >= TRIGGER:
             return True
     return False
-
 
 def classify(i):
     s0 = px[i]
@@ -147,14 +147,11 @@ def classify(i):
         return LOSS, True
     return ("BREACHED_RECOVERED" if PRODUCT == "BRC" and breached else "MATURITY_CASH"), True
 
-
 rows = [classify(i) for i, d in enumerate(dates) if launch_start <= d <= launch_end]
 every, completed = [o for o, c in rows], [o for o, c in rows if c]
 
-
 def pct(bucket, of):
     return f"{of.count(bucket) / len(of):.3%}" if of else "n/a"
-
 
 pd.DataFrame([("Product", f"{UNDERLYING} {PRODUCT}"), ("Terms", TERMS), ("Launches", len(every))]
              + [(f"{b} %", pct(b, every)) for b in BUCKETS + ["OUTSTANDING"]]

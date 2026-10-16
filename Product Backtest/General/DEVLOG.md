@@ -276,3 +276,46 @@ the normal 0.25. The European legend says "maturity date" (that's when the test 
 day count reads "on N distinct days". Wide European bands are still expected - they are runs of
 consecutive maturity days that all finished above the barrier. 12/12 chart-vs-table checks pass.
 Chart cell now 7,964 pasted characters - about 230 left under Excel's 8,192.
+
+## Daily stored as "DAILY", not 0 (2026-10-16)
+
+Internally `frequency()` used 0 to mean "every trading day", while a 0 typed into the sheet means
+"no autocall". Results were right (a typed 0 never reached the daily path), but the same number meant
+opposite things on the sheet and in the code. Daily is now the marker "DAILY" in both cells, so 0 /
+blank only ever means no autocall. Daily itself is unchanged and still selected by typing `Daily`.
+Verified on AAPL FCN (strike 90%, trigger 100%, 12m): Daily 99.1% autocall, Daily + 3m delay 93.1%,
+0 and blank 0.0%, Quarterly 85.8%, 3 + 3m delay 78.8% - table and chart agree in each; 12/12 chart-vs-
+table checks pass. Chart cell 8,037 pasted characters (~150 under Excel's 8,192).
+
+## Review pass: robustness, chart clarity, size (2026-10-16)
+
+Full review of both General cells. Outcome rules unchanged; fixes are about bad input and display.
+
+Input robustness (both cells):
+- Blank Launch Start used to give zero launches; it now means the first price date.
+- Price dates are accepted as real dates, text, or Excel serial numbers (a General-formatted Date
+  column arrives as numbers like 45000 - converted from Excel's 1899-12-30 origin, not read as
+  nanoseconds since 1970). Non-numeric prices ("#N/A", text) become blank and the row is dropped,
+  instead of the cell failing on float conversion.
+- A typed Ticker name keeps its case ("Tech basket", not "TECH BASKET").
+- An unknown Product raises "Product (H2) must be FCN, RC, BRC or BSF, not X" instead of a KeyError.
+
+Chart clarity:
+- Price / underlying lines drawn above the status lines (zorder) so they are never hidden.
+- Legend in the same order as the table (OUTSTANDING last), with each status's share of launches
+  next to the count - the same numbers as the table's "% " rows.
+- Second title line only when there is something to say: default view (no ticked status), or a grid
+  label that isn't any status ("Not a status - check J:K: Phys Delivry"). Ticking another product's
+  statuses is normal with one shared grid, so it is no longer listed.
+- One combined AUTOCALL "none" message replaces the four specific ones (character budget).
+
+Size: Excel's 8,192 limit may count a line break as two characters, so the chart cell is now measured
+both ways: 7,924 characters, 8,086 with two-character line breaks. The grid reader and drawing loop
+were rewritten more compactly to fit the above; one dead branch removed (a knock-out is always BSF's
+bad outcome, so the "non-bad knock-out" opacity could never apply).
+
+Verified: 12/12 chart-vs-table checks; every grid label variant; every frequency spelling; FCN cell vs
+General table; annual at 12/24/36m vs a plain loop; blank Launch Start, text dates, serial dates,
+"#N/A" rows and blank columns each give the same outcomes as a clean sheet in both cells. Charts
+rendered and inspected for FCN and BRC (single), RC and BSF (4-stock basket), default view and a
+mistyped label.

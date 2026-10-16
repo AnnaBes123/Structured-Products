@@ -262,3 +262,22 @@ The output table now has a `Terms` row under `Product`, worded for this product 
 the General cell's `Terms` row - see `Product Backtest/General/DEVLOG.md`, 2026-10-12). For BRC/BSF
 the monitoring mode moved out of the `Product` row into `Terms`. Wording only: every number in the
 table equals the General cell's for the same terms (checked on PFE, 12m).
+
+## Excel cell on the General cells' input conventions (2026-10-16)
+
+`FCN Python-in-Excel.py` now reads its inputs the same way as `Product Backtest/General/` (see that
+DEVLOG, 2026-10-13 to 2026-10-16):
+
+- Strike / Autocall Trigger: 130, "130%" or 1.3 (anything above 5 = percentage points).
+- Autocall Frequency: Daily, Monthly, Bi-Monthly (every 2 months), Quarterly, Semi-Annually,
+  Annually, or a number of months ("3", "3m", "3 months"). 0 or blank = no autocall. Daily is stored
+  as the marker "DAILY", never 0, and is only selected by typing "Daily".
+- Autocall Delay: "No delay", 0, blank or whole months; same rule as the old lockout (first
+  observation = delay + one period).
+
+Still label-matched (unlike the General cells, which read by row), and the old labels "Autocall
+Frequency Months" / "Autocall Lockout Months" still work, so an existing Params sheet needs no edit.
+Verified on AAPL from 2015: an old-style sheet gives launch-for-launch the same outcomes as the
+previous commit (5 schedules incl. no autocall); with new labels and words, outcomes and the Terms
+row equal the General table cell's for Daily, Daily + delay, Quarterly, Monthly + delay,
+Semi-Annually, "3 months", Annually, 0 and blank.

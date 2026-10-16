@@ -18,17 +18,19 @@ Setup this expects on the sheet (adjust the two xl(...) range references below t
      for a worst-of basket.
   2. A two-column parameter list on a "Params" sheet, one term per row, label in column A and value
      in column B (A1:B8):
-       Strike                        0.90
-       Autocall Trigger              1.00
+       Strike                        90%          (130, "130%" and 1.3 all work)
+       Autocall Trigger              100%
        Tenor Months                  12
-       Autocall Frequency Months     3
-       Autocall Lockout Months       0
+       Autocall Frequency            Quarterly    (Daily, Monthly, Bi-Monthly, Quarterly, Semi-Annually,
+                                                   Annually, or a number of months; 0 / blank = no autocall)
+       Autocall Delay                No delay     (or whole months; first observation = delay + one period)
        Launch Start                  2001-09-18
        Launch End                    (blank)
        Max Gap Days                  10
-     The labels in column A below must match these exactly (spelling/spacing). Autocall Frequency
-     Months = 0 disables autocall (Excel has no blank-means-None the way Python does - 0 is the
-     sentinel). Launch End left blank -> resolves to the last date in the price table.
+     The labels in column A must match these (spelling/spacing). The older labels "Autocall Frequency
+     Months" and "Autocall Lockout Months" are still accepted. Same input conventions as the General
+     cells: 0 or blank frequency = no autocall; Daily is only ever selected by the word "Daily".
+     Launch End left blank -> resolves to the last date in the price table.
 
 `xl()` is a Python-in-Excel builtin (not usable/importable outside Excel) - it reads a sheet range
 and, with headers=True, returns it as a pandas DataFrame. pandas is preloaded as `pd` in this
@@ -47,13 +49,42 @@ compact reimplementation, not a shared code path, same caveat as FCN XLSX.py.
 """
 
 # ---8<--- everything from here down goes into the =PY() cell ---8<---
+import re
 
 params_raw = xl("Params!A1:B8")                          # <-- adjust range to your Params table
 p = dict(zip(params_raw.iloc[:, 0].str.strip(), params_raw.iloc[:, 1]))   # label (col A, whitespace-trimmed) -> value (col B)
-STRIKE, AUTOCALL_TRIGGER = float(p["Strike"]), float(p["Autocall Trigger"])
-TENOR_MONTHS = int(p["Tenor Months"])
-AUTOCALL_FREQUENCY_MONTHS = int(p["Autocall Frequency Months"])   # 0 = disabled
-AUTOCALL_LOCKOUT_MONTHS, MAX_GAP_DAYS = int(p["Autocall Lockout Months"]), int(p["Max Gap Days"])
+
+
+def text(*labels):
+    v = next((p[k] for k in labels if k in p), None)  # first label present: new name, then the old one
+    return "" if v is None or pd.isna(v) else str(v).strip().upper()
+
+
+def level(label):
+    s = text(label)
+    x = float(s.rstrip("%") or 0)
+    return x / 100 if s.endswith("%") or x > 5 else x  # 130 / "130%" / 1.3 -> 1.3
+
+
+def months(*labels):
+    s = text(*labels).replace("MONTHS", "").replace("M", "").strip()
+    return 0 if not s or s.startswith("NO") else int(float(s))
+
+
+def frequency(*labels):
+    s = re.sub("[^A-Z0-9.]", "", text(*labels))
+    named = {"DAILY": "DAILY", "MONTHLY": 1, "BIMONTHLY": 2, "QUARTERLY": 3, "QUARTER": 3, "SEMIANNUALLY": 6,
+             "SEMIANNUAL": 6, "ANNUALLY": 12, "ANNUAL": 12}
+    if s in named:
+        return named[s]
+    s = s.replace("MONTHS", "").replace("MONTH", "").rstrip("M")
+    return None if s in ("", "NONE", "NO", "NOAUTOCALL") or float(s) == 0 else int(float(s))  # 0 = no autocall
+
+
+STRIKE, AUTOCALL_TRIGGER = level("Strike"), level("Autocall Trigger")
+TENOR_MONTHS, MAX_GAP_DAYS = months("Tenor Months"), months("Max Gap Days")
+AUTOCALL_FREQUENCY = frequency("Autocall Frequency", "Autocall Frequency Months")   # None = no autocall
+AUTOCALL_DELAY = months("Autocall Delay", "Autocall Delay to First Observation (Months)", "Autocall Lockout Months")
 
 prices_df = xl("Prices!A1:B100000", headers=True)        # <-- oversized on purpose, see docstring
 prices_df = prices_df.dropna().set_index(prices_df.columns[0]).sort_index()
@@ -64,8 +95,8 @@ launch_start = pd.Timestamp(p["Launch Start"])
 data_as_of = all_dates.max()
 launch_end = data_as_of if pd.isna(p["Launch End"]) else pd.Timestamp(p["Launch End"])
 
-obs_offsets = ([] if not AUTOCALL_FREQUENCY_MONTHS else
-               list(range(AUTOCALL_LOCKOUT_MONTHS + AUTOCALL_FREQUENCY_MONTHS, TENOR_MONTHS, AUTOCALL_FREQUENCY_MONTHS)))
+obs_offsets = (list(range(AUTOCALL_DELAY + AUTOCALL_FREQUENCY, TENOR_MONTHS, AUTOCALL_FREQUENCY))
+               if isinstance(AUTOCALL_FREQUENCY, int) else [])
 
 
 def map_obs(target):
@@ -76,6 +107,10 @@ def map_obs(target):
 def classify(i):
     s0 = prices[i]
     j = map_obs(all_dates[i] + pd.DateOffset(months=TENOR_MONTHS))
+    if AUTOCALL_FREQUENCY == "DAILY":  # every trading day after the delay, strictly before maturity's day
+        first = int(all_dates.searchsorted(all_dates[i] + pd.DateOffset(months=AUTOCALL_DELAY), side="right"))
+        if ((prices[first:len(all_dates) if j is None else j] / s0).min(axis=1) >= AUTOCALL_TRIGGER).any():
+            return "AUTOCALL", j is not None
     for m in obs_offsets:
         obs_cal = all_dates[i] + pd.DateOffset(months=m)
         if obs_cal > data_as_of:
@@ -102,9 +137,11 @@ def fmt_pct(bucket, of):
 result = pd.DataFrame([
     ("Product", f"{ticker_label} FCN"),
     ("Terms", f"strike {STRIKE:.0%}"
-              + (f", autocall {AUTOCALL_TRIGGER:.0%} every {AUTOCALL_FREQUENCY_MONTHS}m"
-                 + (f" after {AUTOCALL_LOCKOUT_MONTHS}m lockout" if AUTOCALL_LOCKOUT_MONTHS else "")
-                 if AUTOCALL_FREQUENCY_MONTHS else ", no autocall")
+              + (f", autocall {AUTOCALL_TRIGGER:.0%} "
+                 + {"DAILY": "daily", 1: "monthly", 2: "bi-monthly", 3: "quarterly",
+                    6: "semi-annually", 12: "annually"}.get(AUTOCALL_FREQUENCY, f"every {AUTOCALL_FREQUENCY}m")
+                 + (f" after {AUTOCALL_DELAY}m delay" if AUTOCALL_DELAY else "")
+                 if AUTOCALL_FREQUENCY is not None else ", no autocall")
               + f", tenor {TENOR_MONTHS}m"),
     ("Launches", len(outcomes)),
     ("Autocall %", fmt_pct("AUTOCALL", outcomes)),
